@@ -308,6 +308,21 @@ pub fn separate(v: &Vessel, s: &RigidState, child: usize, impulse: f64) -> (Sepa
     (piece(rest, -impulse), piece(detached, impulse))
 }
 
+/// Löst die nächste Stufe aus: Triebwerke zünden, Entkoppler trennen.
+/// `ship`/`s` behalten den oberen Teil; zurück kommen die abgeworfenen Teile.
+pub fn activate_stage(ship: &mut Vessel, s: &mut RigidState) -> Vec<Separated> {
+    let mut dropped = Vec::new();
+    // Von hinten, damit die Indizes der übrigen Entkoppler gültig bleiben.
+    for d in ship.activate_next_stage().into_iter().rev() {
+        let impulse = ship.parts[d].def.decoupler_impulse().unwrap_or(0.0);
+        let (rest, lower) = separate(ship, s, d, impulse);
+        *ship = rest.vessel;
+        *s = rest.state;
+        dropped.push(lower);
+    }
+    dropped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
