@@ -1,0 +1,18 @@
+// Flüssigtriebwerk mit Schubvektorsteuerung.
+(
+    id: "triebwerk",
+    name: "Triebwerk",
+    dry_mass: 1000.0,
+    attach: Stack,
+    shape: Cone(radius_bottom: 0.6, radius_top: 0.45, length: 1.4),
+    node_strength: (tension: 300000.0, compression: 1500000.0, shear: 250000.0, bending: 400000.0, torsion: 150000.0),
+    modules: [
+        Engine(
+            thrust_vac: 215000.0,      // N im Vakuum, Vollschub
+            isp_vac: 320.0,            // s
+            isp_sl: 280.0,             // s bei 1 atm; Schub skaliert mit Isp
+                                       // (Massenstrom konstant), am Boden 188 kN
+            gimbal_deg: 3.0,
+        ),
+    ],
+)

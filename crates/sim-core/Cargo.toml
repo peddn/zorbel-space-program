@@ -1,0 +1,9 @@
+[package]
+name = "sim-core"
+description = "Deterministischer Simulationskern: f64, typisierte Bezugssysteme, Kepler-Bahnen, Integratoren. Keine Engine-Abhängigkeit."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true

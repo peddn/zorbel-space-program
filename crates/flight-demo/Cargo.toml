@@ -1,0 +1,14 @@
+[package]
+name = "flight-demo"
+description = "Headless-Testflug: zweistufige Rakete vom Boden in eine 100-km-Kreisbahn."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-core.workspace = true
+vessel.workspace = true
+glam.workspace = true
+
+[[bin]]
+name = "zorbel"
+path = "src/main.rs"

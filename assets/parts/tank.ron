@@ -1,0 +1,12 @@
+// Zylindrischer Treibstofftank, 1,25 m Durchmesser.
+(
+    id: "tank",
+    name: "Tank",
+    dry_mass: 250.0,
+    attach: Stack,
+    shape: Cylinder(radius: 0.625, length: 1.9),
+    node_strength: (tension: 300000.0, compression: 1200000.0, shear: 250000.0, bending: 400000.0, torsion: 150000.0),
+    modules: [
+        FuelTank(capacity: 2000.0),    // kg Treibstoff (ein Einheitstreibstoff)
+    ],
+)

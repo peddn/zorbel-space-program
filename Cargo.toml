@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/sim-core", "crates/vessel", "crates/flight-demo"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+glam = { version = "0.30", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+sim-core = { path = "crates/sim-core" }
+vessel = { path = "crates/vessel" }
+
+[profile.dev]
+opt-level = 1

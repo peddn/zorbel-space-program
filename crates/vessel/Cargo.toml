@@ -1,0 +1,11 @@
+[package]
+name = "vessel"
+description = "Bauteile (datengetrieben), Schiffsgraph, Massenaggregation, Lastberechnung, Staging."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-core.workspace = true
+glam.workspace = true
+serde.workspace = true
+ron.workspace = true
