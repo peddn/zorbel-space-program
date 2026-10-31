@@ -14,8 +14,8 @@ pub mod integrate;
 pub mod kepler;
 
 pub use atmosphere::{Atmosphere, AtmosphereSample};
-pub use body::CelestialBody;
-pub use frame::{Frame, Inertial, PartLocal, Rotation, Vec3, VesselFrame};
+pub use body::{CelestialBody, GeoPosition};
+pub use frame::{BodyFixed, Frame, Inertial, PartLocal, Rotation, Vec3, VesselFrame};
 pub use kepler::{Elements, StateVector};
 
 /// Normfallbeschleunigung, Basis für den spezifischen Impuls.

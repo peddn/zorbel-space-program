@@ -17,13 +17,15 @@ use crate::loads::{ExternalLoad, LoadAnalysis, Motion, joint_loads, motion_from_
 use crate::mass::{MassProperties, mass_properties};
 use crate::vessel::Vessel;
 use sim_core::kepler::{self, StateVector};
-use sim_core::{AtmosphereSample, CelestialBody, Inertial, Rotation, Vec3, VesselFrame};
+use sim_core::{AtmosphereSample, CelestialBody, GeoPosition, Inertial, Rotation, Vec3, VesselFrame};
 
 /// Kleinster Schritt bei voller Dynamik (Schub, dichte Luft).
 pub const DT_PHYSICS: f64 = 0.02;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RigidState {
+    /// Simulationszeit in s. Bestimmt u. a. die Drehlage des Planeten.
+    pub time: f64,
     /// Position des Schwerpunkts relativ zum Zentralkörper.
     pub pos: Vec3<Inertial>,
     pub vel: Vec3<Inertial>,
@@ -42,6 +44,30 @@ impl RigidState {
     }
     pub fn altitude(&self, body: &CelestialBody) -> f64 {
         self.pos.length() - body.radius
+    }
+    /// Geschwindigkeit relativ zur mitdrehenden Oberfläche (und zur Luft).
+    pub fn surface_velocity(&self, body: &CelestialBody) -> Vec3<Inertial> {
+        self.vel - body.corotation_velocity(self.pos)
+    }
+    pub fn geo_position(&self, body: &CelestialBody) -> GeoPosition {
+        body.geo_position(self.pos, self.time)
+    }
+
+    /// Ruhend über dem Ort `site` (Höhe = Höhe des Schwerpunkts), Spitze
+    /// senkrecht nach oben. "Ruhend" heißt: dreht mit dem Planeten mit,
+    /// in Position, Geschwindigkeit und Winkelgeschwindigkeit.
+    pub fn at_rest(body: &CelestialBody, site: GeoPosition, time: f64) -> Self {
+        let pos = body.orientation(time).apply(body.geo_to_body_fixed(site));
+        let up = pos.normalize_or_zero();
+        let attitude: Rotation<VesselFrame, Inertial> =
+            Rotation::from_quat(glam::DQuat::from_rotation_arc(glam::DVec3::Z, up.raw()));
+        RigidState {
+            time,
+            pos,
+            vel: body.corotation_velocity(pos),
+            attitude,
+            omega: attitude.inverse().apply(body.angular_velocity()),
+        }
     }
 }
 
@@ -93,8 +119,10 @@ fn evaluate(v: &Vessel, geo: &[PartAero], mp: &MassProperties, s: &RigidState, c
         c.rotation.y().clamp(-1.0, 1.0),
         c.rotation.z().clamp(-1.0, 1.0),
     );
-    // Luft ruht im Inertialsystem (Planet rotiert noch nicht).
-    let v_body = s.attitude.inverse().apply(s.vel);
+    // Die Luft dreht mit dem Planeten; maßgeblich ist die Anströmung.
+    let v_body = s.attitude.inverse().apply(s.surface_velocity(body));
+    // Drehung relativ zur Luft: die Luft am Ort jedes Teils dreht ebenfalls mit.
+    let omega_rel = s.omega - s.attitude.inverse().apply(body.angular_velocity());
 
     let mut ext = Vec::new();
     let mut burn = Vec::new();
@@ -135,7 +163,7 @@ fn evaluate(v: &Vessel, geo: &[PartAero], mp: &MassProperties, s: &RigidState, c
         // Luftkraft am eigenen Ort des Teils
         let point = p.com();
         let lever = point - mp.com;
-        let v_part = v_body + s.omega.cross(lever);
+        let v_part = v_body + omega_rel.cross(lever);
         let v_local = p.orientation.inverse().apply(v_part);
         let force_at = |defl: f64| p.orientation.apply(part_force(p, &geo[i], v_local, &air, defl));
         let deflection = match p.def.control_surface() {
@@ -180,6 +208,7 @@ pub fn step(v: &mut Vessel, s: &mut RigidState, c: &Controls, body: &CelestialBo
     s.omega += ev.motion.alpha * (dt / 2.0);
 
     // Drift: exakte Keplerbahn, freie Drehung
+    s.time += dt;
     let o = kepler::propagate(s.orbit(), body.mu, dt);
     s.pos = o.r;
     s.vel = o.v;
@@ -268,6 +297,7 @@ pub fn separate(v: &Vessel, s: &RigidState, child: usize, impulse: f64) -> (Sepa
         let mpp = mass_properties(&vessel);
         let d = mpp.com - mp.com;
         let state = RigidState {
+            time: s.time,
             pos: s.pos + s.attitude.apply(d),
             vel: s.vel + s.attitude.apply(s.omega.cross(d) + axis * (push / mpp.mass)),
             attitude: s.attitude,
@@ -300,6 +330,7 @@ mod tests {
 
     fn some_state() -> RigidState {
         RigidState {
+            time: 0.0,
             pos: Vec3::new(700_000.0, 0.0, 0.0),
             vel: Vec3::new(0.0, 2_200.0, 0.0),
             attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(0.3)),
@@ -308,7 +339,15 @@ mod tests {
     }
 
     fn planet(atmosphere: Atmosphere) -> CelestialBody {
-        CelestialBody { name: "Test".into(), mu: 3.5316e12, radius: 600_000.0, soi_radius: 8.4e7, atmosphere }
+        CelestialBody {
+            name: "Test".into(),
+            mu: 3.5316e12,
+            radius: 600_000.0,
+            soi_radius: 8.4e7,
+            atmosphere,
+            rotation_rate: 0.0,
+            rotation_offset: 0.0,
+        }
     }
 
     #[test]
@@ -348,6 +387,7 @@ mod tests {
         let mut v = two_stage();
         let r = 700_000.0;
         let mut s = RigidState {
+            time: 0.0,
             pos: Vec3::new(r, 0.0, 0.0),
             vel: Vec3::new(0.0, (body.mu / r).sqrt(), 0.0),
             attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(0.3)),
@@ -370,6 +410,7 @@ mod tests {
             let mut v = two_stage();
             v.activate_next_stage();
             let mut s = RigidState {
+                time: 0.0,
                 pos: Vec3::new(600_000.0 + 2_000.0, 0.0, 0.0),
                 vel: Vec3::new(300.0, 100.0, 0.0),
                 attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)),
@@ -406,6 +447,7 @@ mod tests {
         let lib = PartLibrary::builtin();
         let mut v = VesselBuilder::new("Tank", lib.part("tank")).build();
         let mut s = RigidState {
+            time: 0.0,
             pos: Vec3::new(600_000.0 + 50_000.0, 0.0, 0.0),
             vel: Vec3::ZERO,
             // Boden voran: Spitze (+Z) zeigt nach oben
@@ -436,6 +478,7 @@ mod tests {
         let body = planet(Atmosphere::earthlike());
         let mut v = two_stage();
         let base = RigidState {
+            time: 0.0,
             pos: Vec3::new(600_000.0 + 3_000.0, 0.0, 0.0),
             vel: Vec3::new(300.0, 0.0, 0.0),
             attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)),
@@ -455,10 +498,38 @@ mod tests {
     }
 
     #[test]
+    fn corotating_air_exerts_no_force_on_resting_vessel() {
+        let mut body = planet(Atmosphere::earthlike());
+        body.rotation_rate = CelestialBody::rate_from_period(21_549.425);
+        let mut v = two_stage();
+        let site = GeoPosition { latitude: 0.5, longitude: 1.0, altitude: 3_000.0 };
+        let mut s = RigidState::at_rest(&body, site, 1_234.0);
+        assert!((s.vel.length() - body.rotation_rate * (body.radius + 3_000.0) * 0.5_f64.cos()).abs() < 1e-9);
+        let r = step(&mut v, &mut s, &Controls::default(), &body, DT_PHYSICS);
+        assert!(r.aero_force < 1e-9, "Luftkraft {} N", r.aero_force);
+        assert_eq!(r.dynamic_pressure, 0.0);
+        // Nach einem Schritt freien Falls: fast dieselbe Lage über Grund
+        let g = s.geo_position(&body);
+        assert!((g.latitude - 0.5).abs() < 1e-9 && (g.longitude - 1.0).abs() < 1e-9);
+        assert!((s.time - 1_234.02).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rotation_gives_eastward_launch_bonus() {
+        let mut body = planet(Atmosphere::VACUUM);
+        body.rotation_rate = CelestialBody::rate_from_period(21_549.425);
+        let s = RigidState::at_rest(&body, GeoPosition { latitude: 0.0, longitude: 0.0, altitude: 10.0 }, 0.0);
+        // Am Äquator: ~175 m/s Bahngeschwindigkeit schon auf der Rampe
+        assert!((s.vel.length() - 174.9).abs() < 0.2);
+        assert!(s.surface_velocity(&body).length() < 1e-9);
+    }
+
+    #[test]
     fn step_size_stops_at_atmosphere_entry() {
         let body = planet(Atmosphere::earthlike());
         // fällt von 200 km senkrecht
         let s = RigidState {
+            time: 0.0,
             pos: Vec3::new(800_000.0, 0.0, 0.0),
             vel: Vec3::ZERO,
             attitude: Rotation::IDENTITY,

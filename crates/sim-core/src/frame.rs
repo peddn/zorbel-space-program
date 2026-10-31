@@ -39,6 +39,14 @@ impl Frame for Inertial {
     const NAME: &'static str = "Inertial";
 }
 
+/// Mit dem Zentralkörper mitrotierendes System, Ursprung im Mittelpunkt,
+/// +Z = Drehachse. Startplatz, Luft und Boden ruhen hier.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyFixed;
+impl Frame for BodyFixed {
+    const NAME: &'static str = "Körperfest";
+}
+
 /// Schiffsfestes System. Ursprung: Mitte des Wurzelteils, +Z = Spitze.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VesselFrame;

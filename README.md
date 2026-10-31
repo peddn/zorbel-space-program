@@ -54,6 +54,11 @@ cargo run --bin zorbel          # Testflug in eine 100-km-Kreisbahn
   Wirkrichtung selbst aus der aktuellen Anströmung.
 - **Triebwerke** haben einen festen Massenstrom; der Schub folgt dem Isp,
   der linear vom Umgebungsdruck abhängt (am Boden 188 kN, im Vakuum 215 kN).
+- **Planetenrotation.** Der Planet dreht sich um seine Achse; Startplatz,
+  Luft und Boden ruhen im mitdrehenden System `BodyFixed`. Die Luftkräfte
+  hängen von der Anströmung relativ zur mitdrehenden Luft ab, auch an jedem
+  Teil einzeln. Ein Start nach Osten am Äquator bringt 175 m/s mit.
+  Drehrate 0 ist kein Sonderfall.
 - **Typisierte Bezugssysteme.** Vektoren verschiedener Systeme zu
   addieren ist ein Compile-Fehler (siehe Doctest in `sim-core/src/frame.rs`).
 - **Determinismus.** `BTreeMap` statt `HashMap`, Schrittweiten nur aus dem Zustand berechnet,
@@ -61,8 +66,7 @@ cargo run --bin zorbel          # Testflug in eine 100-km-Kreisbahn
 
 ## Bekannte Vereinfachungen
 
-- Planet rotiert nicht, die Luft ruht im Inertialsystem; nur ein
-  Himmelskörper (SOI-Wechsel folgt).
+- Nur ein Himmelskörper (SOI-Wechsel folgt).
 - Keine Erwärmung beim Wiedereintritt (Thermik folgt).
 - Steuerflächen schlagen ohne Stellgeschwindigkeit aus.
 - Aerodynamik einfach gehalten: kein Auftrieb von Rumpfteilen, keine
@@ -75,5 +79,5 @@ cargo run --bin zorbel          # Testflug in eine 100-km-Kreisbahn
 
 1. Darstellung mit Bevy: Planet, Schiff, Bahnlinie, kamerarelatives Rendering.
 2. Zweiter Himmelskörper und SOI-Übergänge.
-3. Planetenrotation (mitrotierende Luft) und Wiedereintrittserwärmung.
+3. Wiedereintrittserwärmung.
 4. Stoßbehandlung (Impulsfestigkeit) für Landung und Kollision.

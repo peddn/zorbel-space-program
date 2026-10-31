@@ -9,7 +9,7 @@
 //! Schrittweite passt sich an die Stärke der Kräfte an.
 
 use sim_core::kepler::{self, Elements};
-use sim_core::{Atmosphere, CelestialBody, Inertial, Rotation, Vec3, VesselFrame};
+use sim_core::{Atmosphere, CelestialBody, GeoPosition, Inertial, Vec3, VesselFrame};
 use std::collections::BTreeMap;
 use vessel::dynamics::{DT_PHYSICS, separate, step, suggest_dt};
 use vessel::mass::mass_properties;
@@ -136,26 +136,25 @@ fn main() {
         radius: 600_000.0,
         soi_radius: 8.4e7,
         atmosphere: Atmosphere::earthlike(),
+        rotation_rate: CelestialBody::rate_from_period(21_549.425),
+        rotation_offset: 0.0,
     };
     let top = body.atmosphere.top();
     let lib = PartLibrary::builtin();
     let mut ship = build_rocket(&lib);
     let g0 = body.surface_gravity();
 
-    // Auf dem Startplatz: Spitze zeigt radial nach außen (+X).
+    // Startplatz am Äquator; die Rakete steht und dreht mit dem Planeten mit.
     let mp = mass_properties(&ship);
     let bottom = ship.parts.iter().map(|p| p.origin.z() - p.def.shape.stack_length() / 2.0).fold(f64::INFINITY, f64::min);
-    let mut s = RigidState {
-        pos: Vec3::new(body.radius + (mp.com.z() - bottom) + 0.1, 0.0, 0.0),
-        vel: Vec3::ZERO,
-        attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)),
-        omega: Vec3::ZERO,
-    };
+    let pad = GeoPosition { latitude: 0.0, longitude: 0.0, altitude: 0.0 };
+    let mut s = RigidState::at_rest(&body, GeoPosition { altitude: mp.com.z() - bottom + 0.1, ..pad }, 0.0);
     let engine = lib.part("triebwerk").engine().unwrap();
     let sl_thrust = engine.thrust(1.0, body.atmosphere.sample(0.0).pressure);
 
     println!("== {} auf {} (Atmosphäre bis {:.0} km) ==", ship.name, body.name, top / 1000.0);
     println!("Teile: {}, Startmasse {:.0} kg, Schub am Boden {:.0} kN, Schub/Gewicht {:.2}", ship.len(), mp.mass, sl_thrust / 1000.0, sl_thrust / (mp.mass * g0));
+    println!("Startplatz am Äquator: {:.1} m/s Bahngeschwindigkeit durch die Planetenrotation", s.vel.length());
     println!();
 
     let mut log = Log::default();
@@ -168,7 +167,7 @@ fn main() {
 
     ship.activate_next_stage();
     println!("T+{t:>6.1}s  Zündung Stufe 1");
-    println!("           {:>8} {:>8} {:>6} {:>8} {:>6} {:>6}", "Höhe", "v", "Mach", "q", "Neig.", "AoA");
+    println!("           {:>9} {:>10} {:>10} {:>6} {:>9} {:>6} {:>6}", "Höhe", "v Oberfl.", "v Bahn", "Mach", "q", "Neig.", "AoA");
 
     loop {
         let alt = s.altitude(&body);
@@ -176,6 +175,10 @@ fn main() {
         let east = Vec3::<Inertial>::Z.cross(up).normalize_or_zero();
         let speed = s.vel.length();
         let prograde = if speed > 1.0 { s.vel / speed } else { up };
+        // Beim Aufstieg zählt die Anströmung, also die Bewegung relativ zur Luft.
+        let surf = s.surface_velocity(&body);
+        let surf_speed = surf.length();
+        let surf_prograde = if surf_speed > 1.0 { surf / surf_speed } else { up };
         let el = kepler::elements(s.orbit(), body.mu);
         let apo_alt = el.apoapsis.map_or(f64::INFINITY, |a| a - body.radius);
 
@@ -187,9 +190,9 @@ fn main() {
                     phase = Phase::Coast;
                     continue;
                 }
-                let pitch: f64 = if speed < 60.0 { 90.0 } else { 90.0 * (1.0 - (alt / 48_000.0).min(1.0).sqrt()) };
+                let pitch: f64 = if surf_speed < 60.0 { 90.0 } else { 90.0 * (1.0 - (alt / 48_000.0).min(1.0).sqrt()) };
                 let program = up * pitch.to_radians().sin() + east * pitch.to_radians().cos();
-                let target = if speed < 60.0 { up } else { limit_towards(prograde, program, MAX_AOA_DEG.to_radians()) };
+                let target = if surf_speed < 60.0 { up } else { limit_towards(surf_prograde, program, MAX_AOA_DEG.to_radians()) };
                 (DT_PHYSICS, 1.0, target)
             }
             Phase::Coast => {
@@ -237,14 +240,16 @@ fn main() {
         log.record(&ship, &report, t, alt, g0);
 
         if phase == Phase::Ascent && t >= next_telemetry {
+            let surf = s.surface_velocity(&body);
             println!(
-                "T+{t:>6.1}s  {:>6.1} km {:>6.0} m/s {:>6.2} {:>5.1} kPa {:>5.1}° {:>5.1}°",
+                "T+{t:>6.1}s  {:>6.1} km {:>6.0} m/s {:>6.0} m/s {:>6.2} {:>5.1} kPa {:>5.1}° {:>5.1}°",
                 alt / 1000.0,
+                surf.length(),
                 s.vel.length(),
                 report.mach,
                 report.dynamic_pressure / 1000.0,
                 90.0 - angle_deg(s.nose(), up),
-                angle_deg(s.nose(), s.vel)
+                angle_deg(s.nose(), surf)
             );
             next_telemetry += 10.0;
         }
@@ -328,7 +333,18 @@ fn main() {
                 ds = a.state;
             }
             if alt <= 0.0 || steps > 5_000_000 {
-                let end = if alt <= 0.0 { format!("Aufschlag T+{t:.1}s mit {:.0} m/s", ds.vel.length()) } else { "Abbruch: Schrittlimit".into() };
+                let end = if alt <= 0.0 {
+                    // Aufschlagort im mitdrehenden System, relativ zum Startplatz
+                    let g = ds.geo_position(&body);
+                    format!(
+                        "Aufschlag T+{t:.1}s mit {:.0} m/s, {:.1} km {} vom Startplatz",
+                        ds.surface_velocity(&body).length(),
+                        body.surface_distance(pad, g) / 1000.0,
+                        if g.longitude >= 0.0 { "östlich" } else { "westlich" }
+                    )
+                } else {
+                    "Abbruch: Schrittlimit".into()
+                };
                 println!(
                     "{} ({} Teile): Gipfel {:.1} km, max. {:.0} kPa / {:.1} g / {:.1} rad/s (taumelt), {end}, {steps} Schritte",
                     dv.name,
