@@ -48,7 +48,7 @@ fn km(m: f64) -> String {
 
 pub fn update_hud(sim: Res<Sim>, centers: Res<crate::render::ShowCenters>, mut flight: Query<&mut Text, With<FlightText>>, mut msgs: Query<&mut Text, (With<MessageText>, Without<FlightText>)>) {
     let ship = sim.ship();
-    let body = &sim.body;
+    let body = sim.body();
     let s = &ship.state;
     let el = ship.elements(body);
     let r = ship.last.as_ref();
@@ -84,6 +84,7 @@ pub fn update_hud(sim: Res<Sim>, centers: Res<crate::render::ShowCenters>, mut f
     let text = format!(
         "ZORBEL SPACE PROGRAM – {}\n\
          T+ {:.1} s   Zeitraffer {warp}\n\
+         Körper      {} ({})\n\
          Höhe        {}\n\
          v Oberfl.   {:.0} m/s\n\
          v Bahn      {:.0} m/s\n\
@@ -96,6 +97,8 @@ pub fn update_hud(sim: Res<Sim>, centers: Res<crate::render::ShowCenters>, mut f
          {status}{stability}",
         ship.vessel.name,
         s.time,
+        body.name,
+        sim.universe.system(sim.universe.system_of(body.id)).name,
         km(s.altitude(body)),
         s.surface_velocity(body).length(),
         s.vel.length(),

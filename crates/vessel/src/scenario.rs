@@ -1,24 +1,25 @@
-//! Standard-Szenario: Testplanet, Erstflug-Rakete, Startplatz.
+//! Standard-Szenario: Universum, Heimatplanet Zorb, Erstflug-Rakete, Startplatz.
 //! Gemeinsam genutzt von Testflug, Spiel und Screenshot-Modus.
 
 use crate::dynamics::RigidState;
 use crate::mass::mass_properties;
 use crate::part::PartLibrary;
 use crate::vessel::{Vessel, VesselBuilder};
-use sim_core::{Atmosphere, CelestialBody, GeoPosition};
+use sim_core::{CelestialBody, GeoPosition, Universe};
 
-/// Planet mit KSP-artigen Kenndaten: 600 km Radius, μ = 3,5316·10¹² m³/s²,
-/// Atmosphäre bis 70 km, siderischer Tag 21 549 s.
+/// Das mitgelieferte Universum (Zol mit Zun, Zorb, Muz; Nachbarsystem).
+pub fn universe() -> Universe {
+    Universe::builtin()
+}
+
+/// Der Heimatplanet Zorb (600 km Radius, Atmosphäre bis 70 km).
+pub fn home_planet(u: &Universe) -> &CelestialBody {
+    u.body(u.find("Zorb").expect("Zorb fehlt im Universum"))
+}
+
+/// Zorb als eigenständiger Körper, für Tests der Physik auf einem Körper.
 pub fn test_planet() -> CelestialBody {
-    CelestialBody {
-        name: "Testplanet".into(),
-        mu: 3.5316e12,
-        radius: 600_000.0,
-        soi_radius: 8.4e7,
-        atmosphere: Atmosphere::earthlike(),
-        rotation_rate: CelestialBody::rate_from_period(21_549.425),
-        rotation_offset: 0.0,
-    }
+    home_planet(&universe()).clone()
 }
 
 /// Zweistufige Rakete aus den fünf Basisteilen.

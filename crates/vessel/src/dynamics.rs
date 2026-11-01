@@ -23,13 +23,16 @@ use crate::loads::{ExternalLoad, LoadAnalysis, Motion, joint_loads, motion_from_
 use crate::mass::{MassProperties, mass_properties};
 use crate::vessel::Vessel;
 use sim_core::kepler::{self, StateVector};
-use sim_core::{AtmosphereSample, CelestialBody, GeoPosition, Inertial, Rotation, Vec3, VesselFrame};
+use sim_core::{AtmosphereSample, BodyId, CelestialBody, GeoPosition, Inertial, Rotation, Vec3, VesselFrame};
 
 /// Kleinster Schritt bei voller Dynamik (Schub, dichte Luft).
 pub const DT_PHYSICS: f64 = 0.02;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RigidState {
+    /// Körper, auf den sich Position und Geschwindigkeit beziehen (aktuelle
+    /// Einflusssphäre). Wechselt in [`crate::flight`].
+    pub body: BodyId,
     /// Simulationszeit in s. Bestimmt u. a. die Drehlage des Planeten.
     pub time: f64,
     /// Position des Schwerpunkts relativ zum Zentralkörper.
@@ -70,6 +73,7 @@ impl RigidState {
         let attitude: Rotation<VesselFrame, Inertial> =
             Rotation::from_quat(glam::DQuat::from_rotation_arc(glam::DVec3::Z, up.raw()));
         RigidState {
+            body: body.id,
             time,
             pos,
             vel: body.corotation_velocity(pos),
@@ -214,6 +218,7 @@ fn evaluate(v: &Vessel, geo: &HullGeometry, mp: &MassProperties, s: &RigidState,
 
 /// Ein Zeitschritt. Gilt überall: am Boden, in der Luft, im Vakuum.
 pub fn step(v: &mut Vessel, s: &mut RigidState, c: &Controls, body: &CelestialBody, dt: f64) -> StepReport {
+    debug_assert_eq!(s.body, body.id, "Zustand bezieht sich auf einen anderen Körper");
     let geo = v.geometry();
     let mp0 = mass_properties(v);
     let ev = evaluate(v, &geo, &mp0, s, c, body);
@@ -338,6 +343,7 @@ pub fn separate(v: &Vessel, s: &RigidState, child: usize, impulse: f64) -> (Sepa
         let mpp = mass_properties(&vessel);
         let d = mpp.com - mp.com;
         let state = RigidState {
+            body: s.body,
             time: s.time,
             pos: s.pos + s.attitude.apply(d),
             vel: s.vel + s.attitude.apply(s.omega.cross(d) + axis * (push / mpp.mass)),
@@ -387,6 +393,7 @@ mod tests {
 
     fn some_state() -> RigidState {
         RigidState {
+            body: BodyId(0),
             time: 0.0,
             pos: Vec3::new(700_000.0, 0.0, 0.0),
             vel: Vec3::new(0.0, 2_200.0, 0.0),
@@ -398,6 +405,10 @@ mod tests {
 
     fn planet(atmosphere: Atmosphere) -> CelestialBody {
         CelestialBody {
+            id: BodyId(0),
+            parent: None,
+            orbit: None,
+            appearance: sim_core::Appearance::Terran,
             name: "Test".into(),
             mu: 3.5316e12,
             radius: 600_000.0,
@@ -445,6 +456,7 @@ mod tests {
         let mut v = two_stage();
         let r = 700_000.0;
         let mut s = RigidState {
+            body: BodyId(0),
             time: 0.0,
             pos: Vec3::new(r, 0.0, 0.0),
             vel: Vec3::new(0.0, (body.mu / r).sqrt(), 0.0),
@@ -469,6 +481,7 @@ mod tests {
             let mut v = two_stage();
             v.activate_next_stage();
             let mut s = RigidState {
+                body: BodyId(0),
                 time: 0.0,
                 pos: Vec3::new(600_000.0 + 2_000.0, 0.0, 0.0),
                 vel: Vec3::new(300.0, 100.0, 0.0),
@@ -507,6 +520,7 @@ mod tests {
         let lib = PartLibrary::builtin();
         let mut v = VesselBuilder::new("Tank", lib.part("tank")).build();
         let mut s = RigidState {
+            body: BodyId(0),
             time: 0.0,
             pos: Vec3::new(600_000.0 + 50_000.0, 0.0, 0.0),
             vel: Vec3::ZERO,
@@ -547,6 +561,7 @@ mod tests {
         let body = planet(Atmosphere::earthlike());
         let mut v = two_stage();
         let base = RigidState {
+            body: BodyId(0),
             time: 0.0,
             pos: Vec3::new(600_000.0 + 3_000.0, 0.0, 0.0),
             vel: Vec3::new(300.0, 0.0, 0.0),
@@ -610,6 +625,7 @@ mod tests {
         let nose = (up + east).normalize_or_zero();
         let vel_dir = (up * (45f64 - 10.0).to_radians().sin() + east * (45f64 - 10.0).to_radians().cos()).normalize_or_zero();
         let mut s = RigidState {
+            body: BodyId(0),
             time: 0.0,
             pos: up * (600_000.0 + 5_000.0),
             vel: vel_dir * 250.0,
@@ -639,6 +655,7 @@ mod tests {
         let body = planet(Atmosphere::earthlike());
         // fällt von 200 km senkrecht
         let s = RigidState {
+            body: BodyId(0),
             time: 0.0,
             pos: Vec3::new(800_000.0, 0.0, 0.0),
             vel: Vec3::ZERO,

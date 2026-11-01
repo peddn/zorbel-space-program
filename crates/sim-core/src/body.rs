@@ -2,17 +2,37 @@
 
 use crate::atmosphere::Atmosphere;
 use crate::frame::{BodyFixed, Inertial, Rotation, Vec3};
+use crate::universe::{BodyId, Orbit};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::TAU;
 
+/// Darstellungshinweis für einen Himmelskörper (für die Physik ohne Belang).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub enum Appearance {
+    /// Leuchtender Stern mit Farbe (linear RGB).
+    Star { color: (f32, f32, f32) },
+    /// Planet mit Meeren, Land und Eiskappen.
+    #[default]
+    Terran,
+    /// Atmosphärloser, grauer Felskörper.
+    Barren,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CelestialBody {
+    /// Kennung im Universum.
+    pub id: BodyId,
     pub name: String,
+    /// Körper, um den dieser kreist (`None` für Sterne).
+    pub parent: Option<BodyId>,
+    /// Bahn um den Elternkörper.
+    pub orbit: Option<Orbit>,
     /// Gravitationsparameter μ = G·M in m³/s².
     pub mu: f64,
     /// Mittlerer Radius in m.
     pub radius: f64,
-    /// Radius der Einflusssphäre (Patched Conics) in m.
+    /// Radius der Einflusssphäre (Patched Conics) in m. Wird beim Laden des
+    /// Universums aus den Massen berechnet; für Sterne unendlich.
     pub soi_radius: f64,
     /// Immer vorhanden; ohne Lufthülle ist es [`Atmosphere::VACUUM`].
     pub atmosphere: Atmosphere,
@@ -21,6 +41,7 @@ pub struct CelestialBody {
     pub rotation_rate: f64,
     /// Drehwinkel zur Zeit 0 in rad.
     pub rotation_offset: f64,
+    pub appearance: Appearance,
 }
 
 /// Geografische Lage über einem Himmelskörper.
@@ -107,13 +128,17 @@ mod tests {
 
     fn planet() -> CelestialBody {
         CelestialBody {
+            id: BodyId(0),
             name: "Test".into(),
+            parent: None,
+            orbit: None,
             mu: 3.5316e12,
             radius: 600_000.0,
             soi_radius: 8.4e7,
             atmosphere: Atmosphere::VACUUM,
             rotation_rate: CelestialBody::rate_from_period(21_549.425),
             rotation_offset: 0.3,
+            appearance: Appearance::Terran,
         }
     }
 

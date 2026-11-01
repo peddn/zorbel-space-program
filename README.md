@@ -1,8 +1,22 @@
 # Zorbel Space Program
 
 Moderne Umsetzung der Kernmechaniken von Kerbal Space Program in Rust.
-Stand: headless Simulationskern mit Atmosphäre, Teile, Schiffsgraph,
-Aerodynamik pro Teil, Lastberechnung und Staging.
+Stand: Simulationskern mit Atmosphäre, Teilen, Schiffsgraph, Aerodynamik
+pro Teil, Lastberechnung und Staging; ein Universum aus zwei Sternsystemen
+mit Wechsel der Einflusssphäre; Darstellung mit Bevy.
+
+## Das Universum
+
+Definiert in `assets/universe.ron` (Galaxie → Systeme → Stern → Planeten → Monde):
+
+| System | Stern | Planeten / Monde | Lage |
+|---|---|---|---|
+| Zol | Zun | Zorb (Heimat, Atmosphäre) mit Mond Muz (luftlos, gebunden rotierend) | Ursprung |
+| Zirkon (Platzhalter) | Zirka | Zirk (dünne Atmosphäre) | 3,7 Lichtjahre entfernt, eigene Bewegung 17 km/s |
+
+Zwischen den Systemen wird später gesprungen, nur aus einem Sprungring um
+den Stern (`jump_zone`). Galaxie-Positionen sind ganzzahlig in Mikrometern
+gespeichert (i128), damit auch Lichtjahre exakt bleiben.
 
 ## Starten
 
@@ -41,9 +55,9 @@ Shift, Strg) gelten nach ihrer Position.
 
 | Crate | Inhalt |
 |---|---|
-| `sim-core` | f64, typisierte Bezugssysteme (`Vec3<Inertial>`, `Vec3<VesselFrame>`, …), Keplerbahnen über universelle Variablen, RK4. Keine Engine-Abhängigkeit. |
-| `vessel` | Teile aus RON-Dateien, Schiff als Baum, Masse/Schwerpunkt/Trägheit, Lasten in den Verbindungen, Staging, Trennung, Bewegung. |
-| `zorbel-game` | Darstellung mit Bevy: Planet, Schiffe, Bahnlinien, Kamera, Anzeige, Steuerung, Screenshot-Modus. Rendert in f32 relativ zum Kamerafokus. |
+| `sim-core` | f64, typisierte Bezugssysteme (`Vec3<Inertial>`, `Vec3<VesselFrame>`, …), Keplerbahnen über universelle Variablen, Universum (Körperbaum, Bahnen, Einflusssphären, Galaxie-Positionen). Keine Engine-Abhängigkeit. |
+| `vessel` | Teile aus RON-Dateien, Schiff als Baum, Masse/Schwerpunkt/Trägheit, Lasten in den Verbindungen, Staging, Trennung, Bewegung, Flug im Universum (`flight`: Wechsel der Einflusssphäre). |
+| `zorbel-game` | Darstellung mit Bevy: Himmelskörper des aktuellen Systems (Stern als Lichtquelle), fremde Sterne am Himmel, Schiffe, Bahnlinien von Schiffen und Körpern, Kamera, Anzeige, Steuerung, Screenshot-Modus. Rendert in f32 relativ zum Kamerafokus. |
 | `flight-demo` | Headless-Testflug durch die Atmosphäre in die Umlaufbahn; die Unterstufe fällt ungesteuert zurück. |
 | `assets/parts/` | Die fünf Basisteile: Kapsel, Tank, Triebwerk, Steuerfläche, Entkoppler. |
 
@@ -107,6 +121,14 @@ Shift, Strg) gelten nach ihrer Position.
   hängen von der Anströmung relativ zur mitdrehenden Luft ab, auch an jedem
   Teil einzeln. Ein Start nach Osten am Äquator bringt 175 m/s mit.
   Drehrate 0 ist kein Sonderfall.
+- **Patched Conics.** Jedes Schiff gehört zu genau einem Körper und rechnet
+  relativ zu ihm. Einflusssphäre r = a·(μ/μ_Eltern)^0,4. Verlässt das Schiff
+  sie, oder betritt es die eines Mondes, wird nur der Bezugspunkt umgerechnet
+  (Lage und Geschwindigkeit relativ zum Stern bleiben exakt). Die
+  Schrittweite endet höchstens 1 s hinter der Grenze; geprüft wird nur, wenn
+  die Bahn die Grenze überhaupt erreichen kann, damit Zeitraffer in einer
+  stabilen Bahn nicht gebremst wird. Die Körper selbst folgen festen
+  Keplerbahnen (schienengeführt wie in KSP).
 - **Typisierte Bezugssysteme.** Vektoren verschiedener Systeme zu
   addieren ist ein Compile-Fehler (siehe Doctest in `sim-core/src/frame.rs`).
 - **Determinismus.** `BTreeMap` statt `HashMap`, Schrittweiten nur aus dem Zustand berechnet,
@@ -114,7 +136,7 @@ Shift, Strg) gelten nach ihrer Position.
 
 ## Bekannte Vereinfachungen
 
-- Nur ein Himmelskörper (SOI-Wechsel folgt).
+- Patched Conics: immer nur ein Körper zieht am Schiff.
 - Keine Erwärmung beim Wiedereintritt (Thermik folgt).
 - Steuerflächen schlagen ohne Stellgeschwindigkeit aus.
 - Finnenauftrieb nach Schlankkörpertheorie liegt etwa 1,45-fach über
@@ -132,6 +154,15 @@ Shift, Strg) gelten nach ihrer Position.
 
 ## Nächste Schritte
 
-1. Zweiter Himmelskörper und SOI-Übergänge.
-2. Wiedereintrittserwärmung.
-3. Gelände, Landebeine, Zerstörung einzelner Teile beim Aufprall.
+Vereinbarte Reihenfolge:
+
+1. ~~Universum mit zwei Systemen, Körperbaum, SOI-Übergänge~~ (erledigt).
+2. Einheitliche kräftefreie Drehung für beliebige Trägheit (auch im
+   Zeitraffer; Dzhanibekov-Test), Lagehalter im Zeitraffer.
+3. Navball mit sieben Lagehalter-Modi.
+4. Mehrere Ressourcen, Sprungantrieb und Sprungtreibstoff, Sprung zwischen
+   den Systemen mit Vorschau der Ankunftsbahn.
+5. Schiff als allgemeiner Graph (stabile Teile-IDs, Kantenliste), später
+   Andocken und Stationen.
+
+Danach: Wiedereintrittserwärmung, Gelände, Landebeine.

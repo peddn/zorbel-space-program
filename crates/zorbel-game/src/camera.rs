@@ -29,7 +29,7 @@ pub fn camera_bundle() -> impl Bundle {
     (
         MainCamera,
         Camera3d::default(),
-        Projection::Perspective(PerspectiveProjection { fov: 0.9, near: 0.1, far: 1.0e9, ..default() }),
+        Projection::Perspective(PerspectiveProjection { fov: 0.9, near: 0.1, far: 1.0e17, ..default() }),
         Transform::default(),
     )
 }
@@ -51,7 +51,7 @@ pub fn camera_input(
         MouseScrollUnit::Pixel => scroll.delta.y / 50.0,
     };
     if notches != 0.0 {
-        cam.distance = (cam.distance * 0.88f32.powf(notches)).clamp(4.0, 5.0e7);
+        cam.distance = (cam.distance * 0.88f32.powf(notches)).clamp(4.0, 5.0e11);
     }
 }
 

@@ -10,7 +10,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use sim_core::{BodyFixed, CelestialBody, Inertial, Rotation as SimRotation, Vec3 as SimVec3};
+use sim_core::{Appearance, BodyFixed, BodyId, CelestialBody, Inertial, Rotation as SimRotation, SystemId, Vec3 as SimVec3};
 use std::f32::consts::FRAC_PI_2;
 use vessel::Vessel;
 use vessel::mass::mass_properties;
@@ -41,16 +41,21 @@ pub fn update_focus(sim: Res<Sim>, mut focus: ResMut<Focus>) {
     focus.0 = sim.ship().state.pos;
 }
 
-// ---------- Planet ----------
+// ---------- Himmelskörper ----------
 
+/// Darstellung eines Himmelskörpers (Kugel, ggf. mit Atmosphärensaum).
 #[derive(Component)]
-pub struct PlanetRoot;
+pub struct BodyView(pub BodyId);
 #[derive(Component)]
-pub struct AtmosphereShell;
+pub struct AtmosphereShell(pub BodyId);
 #[derive(Component)]
 pub struct LaunchPad;
+/// Licht des Sterns im aktuellen System.
 #[derive(Component)]
 pub struct Sun;
+/// Ein anderer Stern als Lichtpunkt am Himmel.
+#[derive(Component)]
+pub struct SkyStar(pub SystemId);
 
 /// Wertrauschen auf der Kugel (nahtlos, weil im 3D-Raum ausgewertet).
 fn hash(i: i32, j: i32, k: i32) -> f32 {
@@ -75,32 +80,43 @@ fn value_noise(p: Vec3) -> f32 {
     acc
 }
 
-/// Oberflächenfarbe an einem Punkt (Einheitsvektor im körperfesten System).
-pub fn surface_color(dir: Vec3) -> [f32; 4] {
-    let mut n = 0.0;
-    let mut amp = 0.5;
-    let mut freq = 2.0;
+fn fractal(dir: Vec3, offset: f32) -> f32 {
+    let (mut n, mut amp, mut freq) = (0.0, 0.5, 2.0);
     for _ in 0..6 {
-        n += amp * value_noise(dir * freq + Vec3::splat(11.0)); // Startplatz liegt im Grasland
+        n += amp * value_noise(dir * freq + Vec3::splat(offset));
         amp *= 0.5;
         freq *= 2.1;
     }
-    let lat = dir.z.abs();
-    let (r, g, b) = if lat > 0.93 {
-        (0.92, 0.94, 0.97) // Eiskappen
-    } else if n < 0.47 {
-        let d = (0.47 - n) * 2.0;
-        (0.05, 0.16 + 0.1 * (1.0 - d), 0.38 + 0.15 * (1.0 - d)) // Ozean
-    } else if n < 0.6 {
-        (0.22, 0.42 + (n - 0.47), 0.16) // Grasland
-    } else {
-        (0.45, 0.38, 0.26) // Hochland
+    n
+}
+
+/// Oberflächenfarbe (sRGB) an einem Punkt (Einheitsvektor, körperfest).
+pub fn surface_color(look: Appearance, dir: Vec3) -> [f32; 4] {
+    let (r, g, b) = match look {
+        Appearance::Terran => {
+            let n = fractal(dir, 11.0); // Startplatz liegt im Grasland
+            if dir.z.abs() > 0.93 {
+                (0.92, 0.94, 0.97) // Eiskappen
+            } else if n < 0.47 {
+                let d = (0.47 - n) * 2.0;
+                (0.05, 0.16 + 0.1 * (1.0 - d), 0.38 + 0.15 * (1.0 - d)) // Ozean
+            } else if n < 0.6 {
+                (0.22, 0.42 + (n - 0.47), 0.16) // Grasland
+            } else {
+                (0.45, 0.38, 0.26) // Hochland
+            }
+        }
+        Appearance::Barren => {
+            let n = fractal(dir, 37.0);
+            let g = 0.32 + 0.35 * n;
+            (g, g * 0.98, g * 0.95)
+        }
+        Appearance::Star { color } => color,
     };
     [r, g, b, 1.0]
 }
 
-fn planet_texture() -> Image {
-    let (w, h) = (1024u32, 512u32);
+fn body_texture(look: Appearance, w: u32, h: u32) -> Image {
     let mut data = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         // Bevys UV-Kugel: v = 0 am Nordpol (+Z), u = 0 bei Länge 0 (+X)
@@ -108,7 +124,7 @@ fn planet_texture() -> Image {
         for x in 0..w {
             let lon = std::f32::consts::TAU * (x as f32 + 0.5) / w as f32;
             let dir = Vec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
-            let c = surface_color(dir);
+            let c = surface_color(look, dir);
             data.extend(c.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8));
         }
     }
@@ -124,44 +140,73 @@ fn planet_texture() -> Image {
 /// Die große Kugel liegt etwas tiefer als die wahre Oberfläche; in
 /// Kameranähe liegt das genaue Bodenstück darüber (siehe `GroundPatch`).
 const SPHERE_SINK: f32 = 60.0;
+/// Entfernung, in der fremde Sterne als Lichtpunkte gezeichnet werden.
+const SKY_DISTANCE: f32 = 1.0e15;
 
-pub fn setup_planet(
+pub fn setup_bodies(
     mut commands: Commands,
     sim: Res<Sim>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let r = sim.body.radius as f32;
-    let texture = images.add(planet_texture());
-    commands
-        .spawn((PlanetRoot, Transform::default(), Visibility::default()))
-        .with_children(|p| {
-            p.spawn((
-                Mesh3d(meshes.add(Sphere::new(r - SPHERE_SINK).mesh().uv(256, 128))),
+    for b in &sim.universe.bodies {
+        let r = b.radius as f32;
+        let material = match b.appearance {
+            Appearance::Star { color } => StandardMaterial {
+                base_color: Color::linear_rgb(color.0, color.1, color.2),
+                emissive: LinearRgba::rgb(color.0 * 4.0, color.1 * 4.0, color.2 * 4.0),
+                unlit: true,
+                ..default()
+            },
+            look => {
+                let (w, h) = if matches!(look, Appearance::Terran) { (1024, 512) } else { (512, 256) };
+                StandardMaterial { base_color_texture: Some(images.add(body_texture(look, w, h))), perceptual_roughness: 0.9, ..default() }
+            }
+        };
+        commands.spawn((
+            BodyView(b.id),
+            // Bevys UV-Kugel hat ihre Pole auf ±Z und u = Länge ab +X:
+            // genau das körperfeste System, keine Drehung nötig.
+            Mesh3d(meshes.add(Sphere::new(r - SPHERE_SINK).mesh().uv(256, 128))),
+            MeshMaterial3d(materials.add(material)),
+            Transform::default(),
+            Visibility::default(),
+        ));
+        let top = b.atmosphere.top() as f32;
+        if top > 0.0 {
+            commands.spawn((
+                AtmosphereShell(b.id),
+                Mesh3d(meshes.add(Sphere::new(r + top).mesh().uv(128, 64))),
                 MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color_texture: Some(texture),
-                    perceptual_roughness: 0.9,
+                    base_color: Color::srgba(0.45, 0.65, 1.0, 0.05),
+                    alpha_mode: AlphaMode::Blend,
+                    unlit: true,
                     ..default()
                 })),
-                // Bevys UV-Kugel hat ihre Pole auf ±Z und u = Länge ab +X:
-                // genau das körperfeste System, keine Drehung nötig.
                 Transform::default(),
+                Visibility::default(),
             ));
-        });
+        }
+    }
 
-    let top = sim.body.atmosphere.top() as f32;
-    commands.spawn((
-        AtmosphereShell,
-        Mesh3d(meshes.add(Sphere::new(r + top).mesh().uv(128, 64))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.45, 0.65, 1.0, 0.05),
-            alpha_mode: AlphaMode::Blend,
-            unlit: true,
-            ..default()
-        })),
-        Transform::default(),
-    ));
+    for sys in &sim.universe.systems {
+        let color = match sim.universe.body(sys.star).appearance {
+            Appearance::Star { color } => color,
+            _ => (1.0, 1.0, 1.0),
+        };
+        commands.spawn((
+            SkyStar(sys.id),
+            Mesh3d(meshes.add(Sphere::new(SKY_DISTANCE * 0.0015).mesh().ico(2).expect("Ikosaeder"))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(color.0, color.1, color.2),
+                unlit: true,
+                ..default()
+            })),
+            Transform::default(),
+            Visibility::Hidden,
+        ));
+    }
 
     commands.spawn((
         LaunchPad,
@@ -170,63 +215,97 @@ pub fn setup_planet(
         Transform::default(),
     ));
 
-    commands.spawn((
-        Sun,
-        DirectionalLight { illuminance: 12_000.0, shadow_maps_enabled: false, ..default() },
-        Transform::default(),
-    ));
+    commands.spawn((Sun, DirectionalLight { illuminance: 12_000.0, shadow_maps_enabled: false, ..default() }, Transform::default()));
     commands.insert_resource(GlobalAmbientLight { brightness: 600.0, ..default() });
 }
 
-/// Richtung zur Sonne im Inertialsystem (fest; der Startplatz liegt bei
-/// t = 0 auf der Tagseite).
-fn sun_direction() -> SimVec3<Inertial> {
-    SimVec3::new(0.8, -0.45, 0.3).normalize_or_zero()
+/// Lage des Körpers `b` relativ zum Körper des Schiffs.
+fn body_offset(sim: &Sim, b: BodyId) -> SimVec3<Inertial> {
+    sim.universe.relative_state(sim.ship().state.body, b, sim.time()).r
 }
 
-pub fn sync_planet(
+pub fn sync_bodies(
     sim: Res<Sim>,
     focus: Res<Focus>,
-    mut planet: Query<&mut Transform, (With<PlanetRoot>, Without<AtmosphereShell>, Without<LaunchPad>, Without<Sun>)>,
-    mut shell: Query<&mut Transform, (With<AtmosphereShell>, Without<LaunchPad>, Without<Sun>)>,
-    mut pad: Query<&mut Transform, (With<LaunchPad>, Without<Sun>)>,
-    mut sun: Query<&mut Transform, With<Sun>>,
+    mut views: Query<(&BodyView, &mut Transform, &mut Visibility), (Without<AtmosphereShell>, Without<LaunchPad>, Without<Sun>, Without<SkyStar>)>,
+    mut shells: Query<(&AtmosphereShell, &mut Transform, &mut Visibility), (Without<LaunchPad>, Without<Sun>, Without<SkyStar>)>,
+    mut pad: Query<&mut Transform, (With<LaunchPad>, Without<Sun>, Without<SkyStar>)>,
+    mut sun: Query<&mut Transform, (With<Sun>, Without<SkyStar>)>,
     mut clear: ResMut<ClearColor>,
 ) {
     let t = sim.time();
-    let body = &sim.body;
-    let center = render_vec(-focus.0);
-    let orient = body.orientation(t);
-    for mut tr in &mut planet {
-        tr.translation = center;
-        tr.rotation = render_rot(orient);
+    let u = &sim.universe;
+    let ship_body = sim.ship().state.body;
+    let here = u.system_of(ship_body);
+    let place = |b: BodyId| render_vec(body_offset(&sim, b) - focus.0);
+
+    for (view, mut tr, mut vis) in &mut views {
+        if u.system_of(view.0) != here {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        *vis = Visibility::Inherited;
+        tr.translation = place(view.0);
+        tr.rotation = render_rot(u.body(view.0).orientation(t));
     }
-    for mut tr in &mut shell {
-        tr.translation = center;
+    for (shell, mut tr, mut vis) in &mut shells {
+        if u.system_of(shell.0) != here {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        *vis = Visibility::Inherited;
+        tr.translation = place(shell.0);
     }
+    let home = u.body(sim.home);
     for mut tr in &mut pad {
-        let site = body.geo_to_body_fixed(vessel::scenario::LAUNCH_SITE);
+        if u.system_of(home.id) != here {
+            // weit weg legen; der Startplatz gehört zu einem anderen System
+            tr.translation = Vec3::splat(f32::MAX / 4.0);
+            continue;
+        }
+        let orient = home.orientation(t);
+        let site = home.geo_to_body_fixed(vessel::scenario::LAUNCH_SITE);
         let up = site.normalize_or_zero();
-        let pos = orient.apply(site - up * 0.5);
+        let pos = body_offset(&sim, sim.home) + orient.apply(site - up * 0.5);
         tr.translation = render_vec(pos - focus.0);
         // Würfel-Y → radial nach außen
-        let local = glam::DQuat::from_rotation_arc(glam::DVec3::Y, up.raw());
-        tr.rotation = render_rot(orient) * quat_f32(local);
+        tr.rotation = render_rot(orient) * quat_f32(glam::DQuat::from_rotation_arc(glam::DVec3::Y, up.raw()));
     }
+    // Licht kommt vom Stern des Systems
+    let star = u.system(here).star;
+    let to_star = (body_offset(&sim, star) - focus.0).normalize_or_zero();
     for mut tr in &mut sun {
-        *tr = Transform::default().looking_to(-render_vec(sun_direction()), Vec3::Y);
+        *tr = Transform::default().looking_to(-render_vec(to_star), Vec3::Y);
     }
-    // Himmel: blau in dichter Luft, schwarz im Vakuum.
+    // Himmel: blau in dichter Luft, schwarz im Vakuum
+    let body = sim.body();
     let alt = sim.ship().state.altitude(body);
     let p = body.atmosphere.sample(alt).pressure / body.atmosphere.surface_pressure.max(1.0);
     let k = (p.max(0.0)).powf(0.25) as f32;
     clear.0 = Color::srgb(0.01 + 0.36 * k, 0.01 + 0.56 * k, 0.03 + 0.85 * k);
 }
 
+/// Fremde Sterne: Richtung aus den Galaxie-Positionen, feste Entfernung.
+pub fn sync_sky_stars(sim: Res<Sim>, mut sky: Query<(&SkyStar, &mut Transform, &mut Visibility)>) {
+    let u = &sim.universe;
+    let here = u.system_of(sim.ship().state.body);
+    let pos_here = u.system(here).position;
+    for (s, mut tr, mut vis) in &mut sky {
+        if s.0 == here {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        let d = pos_here.offset_to(&u.system(s.0).position).normalize_or_zero();
+        tr.translation = render_vec(SimVec3::from_raw(d)) * SKY_DISTANCE;
+        *vis = Visibility::Inherited;
+    }
+}
+
 // ---------- Genaues Bodenstück unter der Kamera ----------
 
 #[derive(Component)]
 pub struct GroundPatch {
+    body: BodyId,
     /// Mittelpunkt (Einheitsvektor, körperfest), für den das Mesh gebaut ist.
     center: SimVec3<BodyFixed>,
 }
@@ -254,8 +333,8 @@ fn patch_mesh(body: &CelestialBody, center: SimVec3<BodyFixed>) -> Mesh {
             let p = dir * r - c;
             pos.push([p.x() as f32, p.y() as f32, p.z() as f32]);
             nrm.push([dir.x() as f32, dir.y() as f32, dir.z() as f32]);
-            // Vertexfarben sind linear, die Planetentextur ist sRGB.
-            let c = surface_color(Vec3::new(dir.x() as f32, dir.y() as f32, dir.z() as f32));
+            // Vertexfarben sind linear, die Texturen sRGB.
+            let c = surface_color(body.appearance, Vec3::new(dir.x() as f32, dir.y() as f32, dir.z() as f32));
             let lin = Color::srgb(c[0], c[1], c[2]).to_linear();
             col.push([lin.red, lin.green, lin.blue, 1.0]);
         }
@@ -283,22 +362,23 @@ pub fn sync_ground_patch(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut patch: Query<(Entity, &GroundPatch, &mut Transform, &mut Visibility)>,
 ) {
-    let body = &sim.body;
+    let body = sim.body();
     let t = sim.time();
     let orient = body.orientation(t);
     let below = body.to_body_fixed(focus.0, t).normalize_or_zero();
     let alt = focus.0.length() - body.radius;
+    let solid = !matches!(body.appearance, Appearance::Star { .. });
 
     let needs_new = match patch.single() {
-        Ok((_, p, _, _)) => (p.center - below).length() * body.radius > PATCH_HALF * 0.4,
+        Ok((_, p, _, _)) => p.body != body.id || (p.center - below).length() * body.radius > PATCH_HALF * 0.4,
         Err(_) => true,
     };
-    if needs_new && alt < PATCH_MAX_ALT {
+    if needs_new && alt < PATCH_MAX_ALT && solid {
         if let Ok((e, _, _, _)) = patch.single() {
             commands.entity(e).despawn();
         }
         commands.spawn((
-            GroundPatch { center: below },
+            GroundPatch { body: body.id, center: below },
             Mesh3d(meshes.add(patch_mesh(body, below))),
             MeshMaterial3d(materials.add(StandardMaterial { perceptual_roughness: 0.95, ..default() })),
             Transform::default(),
@@ -310,7 +390,7 @@ pub fn sync_ground_patch(
         let c = orient.apply(p.center * body.radius);
         tr.translation = render_vec(c - focus.0);
         tr.rotation = render_rot(orient);
-        *vis = if alt < PATCH_MAX_ALT { Visibility::Inherited } else { Visibility::Hidden };
+        *vis = if alt < PATCH_MAX_ALT && p.body == body.id { Visibility::Inherited } else { Visibility::Hidden };
     }
 }
 
@@ -490,8 +570,35 @@ pub fn draw_orbits(sim: Res<Sim>, focus: Res<Focus>, cam: Res<crate::camera::Orb
     if cam.distance < 5_000.0 {
         return;
     }
-    let body = &sim.body;
+    let u = &sim.universe;
+    let t = sim.time();
+    let ship_body = sim.ship().state.body;
+    // Bahnen der Körper im System um ihren Elternkörper
+    if cam.distance > 2.0e5 {
+        let here = u.system_of(ship_body);
+        for b in u.bodies_in(here) {
+            let (Some(parent), Some(orbit)) = (b.parent, b.orbit) else { continue };
+            let mu = u.body(parent).mu;
+            let period = orbit.period(mu);
+            let base = body_offset(&sim, parent) - focus.0;
+            let n = 512;
+            let pts = (0..=n).map(|i| render_vec(base + orbit.state_at(mu, t + period * i as f64 / n as f64).r));
+            gizmos.linestrip(pts, Color::srgba(0.6, 0.6, 0.7, 0.45));
+        }
+        // Markierung, damit auch winzige Körper zu finden sind
+        for b in u.bodies_in(here) {
+            let size = cam.distance * 0.006;
+            if b.radius as f32 > size * 0.5 {
+                continue; // groß genug, um ihn ohne Markierung zu sehen
+            }
+            let p = render_vec(body_offset(&sim, b.id) - focus.0);
+            let iso = Isometry3d::new(p, Quat::from_rotation_arc(Vec3::Z, (-p).normalize_or(Vec3::Z)));
+            gizmos.circle(iso, size, Color::srgba(0.9, 0.9, 1.0, 0.7));
+        }
+    }
     for (k, o) in sim.objects.iter().enumerate() {
+        let body = sim.body_of(o);
+        let base = body_offset(&sim, body.id) - focus.0;
         let s = o.state.orbit();
         let el = sim_core::kepler::elements(s, body.mu);
         // Bis zum Aufschlag oder einen Umlauf (offene Bahn: 2 h)
@@ -500,7 +607,7 @@ pub fn draw_orbits(sim: Res<Sim>, focus: Res<Focus>, cam: Res<crate::camera::Orb
         let n = 256;
         let pts = (0..=n).map(|i| {
             let st = sim_core::kepler::propagate(s, body.mu, span * i as f64 / n as f64);
-            render_vec(st.r - focus.0)
+            render_vec(base + st.r)
         });
         let color = if k == 0 { Color::srgb(0.3, 0.9, 1.0) } else { Color::srgba(0.8, 0.6, 0.4, 0.5) };
         gizmos.linestrip(pts, color);
@@ -539,7 +646,7 @@ pub struct Centers {
 pub fn centers(sim: &Sim) -> Option<Centers> {
     let ship = sim.ship();
     let s = &ship.state;
-    let body = &sim.body;
+    let body = sim.body();
     let mut atm = body.atmosphere.sample(s.altitude(body));
     if atm.density <= 0.0 {
         atm = body.atmosphere.sample(0.0);

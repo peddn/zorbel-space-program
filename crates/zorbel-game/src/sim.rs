@@ -1,14 +1,16 @@
 //! Spielzustand: alle Objekte im Flug, Steuerung, Zeitraffer.
 //!
 //! Reine Logik ohne Darstellung. Jedes Objekt (Schiff oder Trümmer) wird
-//! mit `vessel::dynamics::step` fortgeschrieben, genau wie im Testflug.
+//! mit `vessel::flight::step` fortgeschrieben: dieselbe Physik wie im
+//! Testflug, dazu der Wechsel der Einflusssphäre zwischen Körpern.
 
 use bevy::prelude::Resource;
 use sim_core::kepler::{self, Elements};
-use sim_core::{CelestialBody, Inertial, Vec3, VesselFrame};
+use sim_core::{BodyId, CelestialBody, Inertial, Universe, Vec3, VesselFrame};
 use vessel::autopilot::{AscentAutopilot, Event, Phase, attitude_control, rate_control};
-use vessel::dynamics::{activate_stage, separate, step, suggest_dt};
-use vessel::scenario::{first_rocket_with, on_launch_site, test_planet};
+use vessel::dynamics::{activate_stage, separate};
+use vessel::flight::{step, suggest_dt};
+use vessel::scenario::{first_rocket_with, on_launch_site, universe};
 use vessel::{Controls, PartLibrary, RigidState, StepReport, Vessel};
 
 static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -51,7 +53,9 @@ pub struct PilotInput {
 
 #[derive(Resource)]
 pub struct Sim {
-    pub body: CelestialBody,
+    pub universe: Universe,
+    /// Heimatplanet mit Startplatz.
+    pub home: BodyId,
     /// Index 0 ist immer das aktive Schiff (Kamerafokus).
     pub objects: Vec<SimObject>,
     pub input: PilotInput,
@@ -81,12 +85,14 @@ impl Sim {
     }
 
     pub fn with_fins(fins: bool) -> Self {
-        let body = test_planet();
+        let universe = universe();
+        let home = universe.find("Zorb").expect("Zorb fehlt");
         let lib = PartLibrary::builtin();
         let vessel = first_rocket_with(&lib, fins);
-        let state = on_launch_site(&body, &vessel, 0.0);
+        let state = on_launch_site(universe.body(home), &vessel, 0.0);
         Self {
-            body,
+            universe,
+            home,
             objects: vec![SimObject { id: 0, vessel, state, last: None, version: 0, crashed: None }],
             input: PilotInput { sas: true, ..Default::default() },
             autopilot: None,
@@ -105,6 +111,16 @@ impl Sim {
 
     pub fn ship(&self) -> &SimObject {
         &self.objects[0]
+    }
+
+    /// Körper, in dessen Einflusssphäre das aktive Schiff fliegt.
+    pub fn body(&self) -> &CelestialBody {
+        self.universe.body(self.ship().state.body)
+    }
+
+    /// Körper eines beliebigen Objekts.
+    pub fn body_of(&self, o: &SimObject) -> &CelestialBody {
+        self.universe.body(o.state.body)
     }
 
     pub fn time(&self) -> f64 {
@@ -184,7 +200,7 @@ impl Sim {
         if self.clamped {
             // Auf der Rampe: Startklammern halten fest, Schiff dreht mit dem Planeten.
             let ship = &mut self.objects[0];
-            ship.state = on_launch_site(&self.body, &ship.vessel, target);
+            ship.state = on_launch_site(self.universe.body(self.home), &ship.vessel, target);
             self.applied_throttle = self.input.throttle;
             return;
         }
@@ -216,8 +232,8 @@ impl Sim {
         let mut steps = 0;
         while self.objects[i].state.time < target - 1e-9 && steps < MAX_STEPS_PER_FRAME {
             steps += 1;
-            let body = &self.body;
             let o = &self.objects[i];
+            let body = self.universe.body(o.state.body);
             let remaining = target - o.state.time;
 
             // Wünsche von Autopilot oder Spieler
@@ -256,14 +272,21 @@ impl Sim {
             }
 
             let o = &self.objects[i];
-            let dt = suggest_dt(requested, &o.vessel, &o.state, o.last.as_ref(), body);
+            let dt = suggest_dt(requested, &o.vessel, &o.state, o.last.as_ref(), &self.universe);
             let controls = if is_ship { self.ship_controls(dt, throttle, plan_target) } else { Controls::default() };
             if is_ship {
                 self.applied_throttle = controls.throttle;
             }
 
             let o = &mut self.objects[i];
-            let report = step(&mut o.vessel, &mut o.state, &controls, &self.body, dt);
+            let (report, soi) = step(&mut o.vessel, &mut o.state, &controls, &self.universe, dt);
+            if let Some((_, to)) = soi
+                && is_ship
+            {
+                let name = self.universe.body(to).name.clone();
+                self.log(format!("Einflussbereich: {name}"));
+            }
+            let o = &mut self.objects[i];
             if let Some((part, speed)) = report.crash {
                 o.crashed = Some((o.vessel.parts[part].def.name.clone(), speed));
                 o.last = Some(report);
@@ -358,7 +381,7 @@ mod tests {
         assert!(!s.ship_lost && !s.clamped);
         let r = s.ship().last.as_ref().unwrap();
         assert!(r.touching_ground, "steht nicht auf dem Boden");
-        assert!(s.ship().state.surface_velocity(&s.body).length() < 0.01);
+        assert!(s.ship().state.surface_velocity(s.body()).length() < 0.01);
     }
 
     /// Start von Hand, 10 s Steigflug, dann 2 s Gieren und loslassen.
@@ -366,12 +389,13 @@ mod tests {
     fn launch_and_yaw(vacuum: bool) -> (f64, f64, f64) {
         let mut s = Sim::new();
         if vacuum {
-            s.body.atmosphere = sim_core::Atmosphere::VACUUM;
+            let home = s.home;
+            s.universe.bodies[home.0].atmosphere = sim_core::Atmosphere::VACUUM;
         }
         s.input.throttle = 1.0;
         s.stage();
         run(&mut s, 10.0);
-        let h = s.ship().state.altitude(&s.body);
+        let h = s.ship().state.altitude(s.body());
         s.input.rotation = Vec3::new(0.0, 1.0, 0.0);
         run(&mut s, 2.0);
         let rate = nose_rate_deg(&s);
@@ -405,7 +429,7 @@ mod tests {
         for _ in 0..30 {
             run(&mut s, 1.0);
             let st = &s.ship().state;
-            let surf = st.surface_velocity(&s.body);
+            let surf = st.surface_velocity(s.body());
             if surf.length() > 50.0 {
                 worst = worst.max(st.nose().dot(surf.normalize_or_zero()).clamp(-1.0, 1.0).acos().to_degrees());
             }

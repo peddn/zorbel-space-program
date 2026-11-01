@@ -1,0 +1,93 @@
+#![enable(implicit_some)]
+// Das Universum von Zorbel Space Program.
+//
+// Galaxie → Sternsysteme → Stern → Planeten → Monde. Alle Systeme teilen
+// dieselben Achsen. Bahnwinkel in rad, Längen in m, μ = G·M in m³/s².
+// Die Einflusssphären werden aus den Massen berechnet.
+// Zwischen Systemen wird gesprungen, nur aus dem Sprungring um den Stern.
+(
+    systems: [
+        (
+            name: "Zol",
+            position_ly: (0.0, 0.0, 0.0),
+            velocity: (0.0, 0.0, 0.0),
+            jump_zone: (2.0e9, 4.0e9),
+            star: (
+                name: "Zun",
+                mu: 1.1723328e18,
+                radius: 2.616e8,
+                rotation_period: 432000.0,
+                appearance: Star(color: (1.0, 0.9, 0.7)),
+                children: [
+                    (
+                        name: "Zorb",
+                        mu: 3.5316e12,
+                        radius: 600000.0,
+                        rotation_period: 21549.425,
+                        // Startplatz (Länge 0) beim Spielstart am Nachmittag,
+                        // Zun etwa 35° über dem westlichen Horizont
+                        rotation_offset: 0.96,
+                        atmosphere: (
+                            surface_pressure: 101325.0,
+                            scale_height: 5600.0,
+                            top: 70000.0,
+                            surface_temperature: 288.15,
+                            lapse_rate: 0.0065,
+                            min_temperature: 200.0,
+                            molar_mass: 0.0289644,
+                            gamma: 1.4,
+                        ),
+                        orbit: (semi_major_axis: 13599840256.0, mean_anomaly_at_epoch: 3.14),
+                        appearance: Terran,
+                        children: [
+                            (
+                                name: "Muz",
+                                mu: 6.5138398e10,
+                                radius: 200000.0,
+                                // gebundene Rotation: Drehdauer = Umlaufdauer
+                                rotation_period: 138984.38,
+                                rotation_offset: 1.7,
+                                orbit: (semi_major_axis: 12000000.0, mean_anomaly_at_epoch: 1.7),
+                                appearance: Barren,
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        ),
+        (
+            // Platzhalternamen, frei änderbar
+            name: "Zirkon",
+            position_ly: (2.296988, 2.630422, 1.22259),  // 3,7 Lichtjahre von Zol
+            velocity: (14000.0, -9000.0, 3000.0),
+            jump_zone: (2.5e9, 5.0e9),
+            star: (
+                name: "Zirka",
+                mu: 1.6e18,
+                radius: 3.1e8,
+                rotation_period: 500000.0,
+                appearance: Star(color: (1.0, 0.75, 0.55)),
+                children: [
+                    (
+                        name: "Zirk",
+                        mu: 4.2e12,
+                        radius: 680000.0,
+                        rotation_period: 26000.0,
+                        atmosphere: (
+                            surface_pressure: 60000.0,
+                            scale_height: 6500.0,
+                            top: 80000.0,
+                            surface_temperature: 250.0,
+                            lapse_rate: 0.005,
+                            min_temperature: 180.0,
+                            molar_mass: 0.0289644,
+                            gamma: 1.4,
+                        ),
+                        orbit: (semi_major_axis: 19000000000.0, eccentricity: 0.03, mean_anomaly_at_epoch: 0.5),
+                        appearance: Terran,
+                    ),
+                ],
+            ),
+        ),
+    ],
+)

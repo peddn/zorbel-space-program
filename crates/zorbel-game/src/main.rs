@@ -26,13 +26,14 @@ impl Plugin for ZorbelPlugin {
             .insert_resource(ClearColor(Color::BLACK))
             .insert_resource(render::ShowCenters::default())
             .init_gizmo_group::<render::MarkerGizmos>()
-            .add_systems(Startup, (render::setup_planet, render::setup_part_materials, render::setup_marker_gizmos))
+            .add_systems(Startup, (render::setup_bodies, render::setup_part_materials, render::setup_marker_gizmos))
             .add_systems(PostStartup, hud::setup_hud)
             .add_systems(
                 Update,
                 (
                     render::update_focus,
-                    render::sync_planet,
+                    render::sync_bodies,
+                    render::sync_sky_stars,
                     render::sync_ground_patch,
                     render::sync_vessels,
                     render::draw_orbits,

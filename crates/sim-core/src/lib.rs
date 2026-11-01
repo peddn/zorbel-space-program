@@ -12,11 +12,13 @@ pub mod body;
 pub mod frame;
 pub mod integrate;
 pub mod kepler;
+pub mod universe;
 
 pub use atmosphere::{Atmosphere, AtmosphereSample};
-pub use body::{CelestialBody, GeoPosition};
+pub use body::{Appearance, CelestialBody, GeoPosition};
 pub use frame::{BodyFixed, Frame, Inertial, PartLocal, Rotation, Vec3, VesselFrame};
 pub use kepler::{Elements, StateVector};
+pub use universe::{BodyId, GalacticPos, Orbit, StarSystem, SystemId, Universe};
 
 /// Normfallbeschleunigung, Basis für den spezifischen Impuls.
 pub const G0: f64 = 9.806_65;

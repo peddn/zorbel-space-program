@@ -78,7 +78,10 @@ pub fn propagate<F: Frame>(s: StateVector<F>, mu: f64, dt: f64) -> StateVector<F
     // Startwert nach Vallado.
     let mut chi = if alpha > 1e-12 {
         sqrt_mu * dt * alpha
-    } else if alpha < -1e-12 {
+    } else if alpha < -1e-12 && dt.abs() * v0 > r0 {
+        // Schätzung nach Vallado; gilt für lange Schritte. Bei kurzen Schritten
+        // (Strecke kleiner als der Abstand) führt sie Newton zur falschen
+        // Lösung, dort ist die lineare Schätzung unten richtig.
         let a = 1.0 / alpha;
         let sign = dt.signum();
         let num = -2.0 * mu * alpha * dt;
@@ -300,6 +303,24 @@ mod tests {
             s = propagate(s, MU, p * 5.0 + 1.37 * i as f64);
             assert!(rel_err(s.specific_energy(MU), e0) < 1e-9);
             assert!((s.angular_momentum() - h0).length() / h0.length() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn hyperbola_short_steps_far_out() {
+        // Weit draußen auf einer Fluchtbahn: kurze und lange Schritte müssen
+        // mit der Geschwindigkeit zusammenpassen (früher Fehler bei 1 s).
+        let r0 = 700_000.0;
+        let s0 = StateVector::<Inertial>::new(Vec3::new(r0, 0.0, 0.0), Vec3::new(0.0, (MU / r0).sqrt() * 2f64.sqrt() * 1.3, 0.0));
+        let far = propagate(s0, MU, 30_000.0);
+        for dt in [0.01, 1.0, 10.0, 100.0, 1_000.0, 1.0e5] {
+            let a = propagate(far, MU, dt);
+            let b = (0..10).fold(far, |s, _| propagate(s, MU, dt / 10.0));
+            assert!((a.r - b.r).length() < 1e-6 * a.r.length(), "dt {dt}: {:?}", a.r - b.r);
+            if dt <= 100.0 {
+                let moved = (a.r - far.r).length();
+                assert!((moved - far.v.length() * dt).abs() < 1e-3 * moved, "dt {dt}: {moved} m");
+            }
         }
     }
 
