@@ -27,33 +27,45 @@ struct Shot {
     /// Simulation läuft weiter, bis das erfüllt ist.
     until: fn(&Sim, f64) -> bool,
     camera: OrbitCamera,
+    /// Schwer- und Druckpunkt einblenden.
+    centers: bool,
+}
+
+fn shot(name: &'static str, until: fn(&Sim, f64) -> bool, distance: f32, pitch: f32, yaw: f32) -> Shot {
+    Shot { name, prepare: |_| {}, until, camera: OrbitCamera { yaw, pitch, distance }, centers: false }
 }
 
 fn shots() -> Vec<Shot> {
-    let cam = |distance: f32, pitch: f32, yaw: f32| OrbitCamera { yaw, pitch, distance };
     vec![
-        Shot { prepare: |_| {}, name: "01-startrampe", until: |_, _| true, camera: cam(32.0, 0.12, -0.7) },
-        Shot { prepare: |_| {}, name: "02-abheben", until: |s, _| s.time() >= 8.0, camera: cam(45.0, 0.05, -0.5) },
-        Shot { prepare: |_| {}, name: "03-max-q", until: |s, _| s.time() >= 57.0, camera: cam(40.0, 0.2, -1.1) },
-        Shot { prepare: |_| {}, name: "04-stufentrennung", until: |s, t0| s.objects.len() > 1 && s.time() >= t0 + 2.0, camera: cam(55.0, 0.25, -0.4) },
-        Shot {
-            prepare: |_| {},
-            name: "05-weltraum",
-            until: |s, _| s.ship().state.altitude(&s.body) > 75_000.0,
-            camera: cam(30.0, 0.35, -0.9),
-        },
-        Shot { prepare: |_| {}, name: "06-umlaufbahn", until: |s, _| s.autopilot.is_none() && s.time() > 200.0, camera: cam(22.0, 0.15, -0.6) },
-        Shot { prepare: |_| {}, name: "07-karte", until: |_, _| true, camera: cam(3.2e6, 0.7, 0.4) },
+        shot("01-startrampe", |_, _| true, 32.0, 0.12, -0.7),
+        shot("02-abheben", |s, _| s.time() >= 8.0, 45.0, 0.05, -0.5),
+        Shot { centers: true, ..shot("03-max-q", |s, _| s.time() >= 57.0, 40.0, 0.2, -1.1) },
+        shot("04-stufentrennung", |s, t0| s.objects.len() > 1 && s.time() >= t0 + 2.0, 55.0, 0.25, -0.4),
+        shot("05-weltraum", |s, _| s.ship().state.altitude(&s.body) > 75_000.0, 30.0, 0.35, -0.9),
+        shot("06-umlaufbahn", |s, _| s.autopilot.is_none() && s.time() > 200.0, 22.0, 0.15, -0.6),
+        shot("07-karte", |_, _| true, 3.2e6, 0.7, 0.4),
         // Neuer Start von Hand: Klammern lösen ohne Gas, die Rakete muss stehen bleiben.
         Shot {
             prepare: |s| {
                 *s = Sim::new();
                 s.stage();
             },
-            name: "08-ohne-gas-am-boden",
-            until: |s, _| s.time() >= 3.0,
-            camera: cam(32.0, 0.12, -0.7),
+            ..shot("08-ohne-gas-am-boden", |s, _| s.time() >= 3.0, 32.0, 0.12, -0.7)
         },
+        // Rakete ohne Finnen, Vollgas, Lagehalter aus: Druckpunkt vor dem Schwerpunkt.
+        Shot {
+            prepare: |s| {
+                *s = Sim::with_fins(false);
+                s.input.throttle = 1.0;
+                s.input.sas = false;
+                s.stage();
+            },
+            centers: true,
+            ..shot("09-ohne-finnen-steigflug", |s, _| s.time() >= 8.0, 40.0, 0.15, -0.9)
+        },
+        // Ohne Stoß von außen: schon die Seitenströmung durch die Planetendrehung
+        // reicht, die instabile Rakete schlägt um.
+        Shot { centers: true, ..shot("10-ohne-finnen-umgeschlagen", |s, _| s.time() >= 22.0, 45.0, 0.15, -0.9) },
     ]
 }
 
@@ -110,6 +122,7 @@ pub fn run(dir: &str) {
             sim.advance_to(t + chunk);
         }
         *apps.main.world_mut().resource_mut::<OrbitCamera>() = shot.camera;
+        apps.main.world_mut().resource_mut::<crate::render::ShowCenters>().0 = shot.centers;
         // Ein paar Bilder, bis Meshes, Bodenstück und Texturen bereitstehen
         for _ in 0..4 {
             update(&mut apps);

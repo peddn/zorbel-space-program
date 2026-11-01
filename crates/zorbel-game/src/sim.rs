@@ -8,8 +8,10 @@ use sim_core::kepler::{self, Elements};
 use sim_core::{CelestialBody, Inertial, Vec3, VesselFrame};
 use vessel::autopilot::{AscentAutopilot, Event, Phase, attitude_control, rate_control};
 use vessel::dynamics::{activate_stage, separate, step, suggest_dt};
-use vessel::scenario::{first_rocket, on_launch_site, test_planet};
+use vessel::scenario::{first_rocket_with, on_launch_site, test_planet};
 use vessel::{Controls, PartLibrary, RigidState, StepReport, Vessel};
+
+static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Zeitraffer-Stufen. Ab 10× regelt niemand mehr die Lage (Schritte zu lang).
 pub const WARP_LEVELS: [f64; 8] = [1.0, 2.0, 4.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0];
@@ -64,15 +66,24 @@ pub struct Sim {
     next_id: u64,
     pub messages: Vec<(f64, String)>,
     pub ship_lost: bool,
+    /// Rakete mit Finnen (sonst die Variante ohne).
+    pub fins: bool,
+    /// Eindeutig pro Sitzung (Neustart = neue Generation). Die Darstellung
+    /// erkennt daran, dass ihre Ansichten zu einer alten Sitzung gehören.
+    pub generation: u64,
     /// Zuletzt tatsächlich gegebenes Gas (Spieler oder Autopilot).
     pub applied_throttle: f64,
 }
 
 impl Sim {
     pub fn new() -> Self {
+        Self::with_fins(true)
+    }
+
+    pub fn with_fins(fins: bool) -> Self {
         let body = test_planet();
         let lib = PartLibrary::builtin();
-        let vessel = first_rocket(&lib);
+        let vessel = first_rocket_with(&lib, fins);
         let state = on_launch_site(&body, &vessel, 0.0);
         Self {
             body,
@@ -86,6 +97,8 @@ impl Sim {
             next_id: 1,
             messages: vec![(0.0, "Bereit. Leertaste: Start".into())],
             ship_lost: false,
+            fins,
+            generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             applied_throttle: 0.0,
         }
     }
@@ -379,6 +392,41 @@ mod tests {
         let (_, rate_air, after_air) = launch_and_yaw(false);
         assert!(rate_air > 5.0 && rate_air < rate, "Drehrate in Luft {rate_air:.1}°/s");
         assert!(after_air < 1.0, "Lagehalter in Luft: {after_air:.1}°/s");
+    }
+
+    /// Vollgas senkrecht, Lagehalter aus: größter Anstellwinkel ab 50 m/s
+    /// in den ersten 30 s (Grad).
+    fn hands_off_launch(fins: bool) -> f64 {
+        let mut s = Sim::with_fins(fins);
+        s.input.throttle = 1.0;
+        s.input.sas = false;
+        s.stage();
+        let mut worst: f64 = 0.0;
+        for _ in 0..30 {
+            run(&mut s, 1.0);
+            let st = &s.ship().state;
+            let surf = st.surface_velocity(&s.body);
+            if surf.length() > 50.0 {
+                worst = worst.max(st.nose().dot(surf.normalize_or_zero()).clamp(-1.0, 1.0).acos().to_degrees());
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn without_fins_and_sas_the_rocket_flips() {
+        let with = hands_off_launch(true);
+        let without = hands_off_launch(false);
+        assert!(with < 10.0, "mit Finnen: {with:.1}°");
+        assert!(without > 90.0, "ohne Finnen: {without:.1}°");
+    }
+
+    #[test]
+    fn switching_design_restarts() {
+        let a = Sim::with_fins(true);
+        let b = Sim::with_fins(false);
+        assert_ne!(a.generation, b.generation);
+        assert!(a.ship().vessel.len() > b.ship().vessel.len());
     }
 
     #[test]

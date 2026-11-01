@@ -318,6 +318,7 @@ pub fn sync_ground_patch(
 
 #[derive(Component)]
 pub struct VesselView {
+    generation: u64,
     id: u64,
     version: u64,
 }
@@ -375,16 +376,18 @@ fn part_mesh(shape: Shape) -> (Mesh, Quat) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_vessel(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     mats: &PartMaterials,
+    generation: u64,
     id: u64,
     version: u64,
     v: &Vessel,
 ) {
     commands
-        .spawn((VesselView { id, version }, Transform::default(), Visibility::default()))
+        .spawn((VesselView { generation, id, version }, Transform::default(), Visibility::default()))
         .with_children(|root| {
             for (i, p) in v.parts.iter().enumerate() {
                 let (mesh, fix) = part_mesh(p.def.hull);
@@ -426,21 +429,24 @@ pub fn sync_vessels(
     mut flames: Query<(&Flame, &mut Transform, &mut Visibility), (Without<VesselView>, Without<PartView>)>,
 ) {
     // Veraltete oder verschwundene Ansichten entfernen
+    let current = |view: &VesselView| {
+        sim.objects.iter().find(|o| view.generation == sim.generation && o.id == view.id && o.version == view.version)
+    };
     let mut present = Vec::new();
     for (e, view, _, _) in &roots {
-        match sim.objects.iter().find(|o| o.id == view.id) {
-            Some(o) if o.version == view.version => present.push(view.id),
-            _ => commands.entity(e).despawn(),
+        match current(view) {
+            Some(o) => present.push(o.id),
+            None => commands.entity(e).despawn(),
         }
     }
     for o in &sim.objects {
         if !present.contains(&o.id) {
-            spawn_vessel(&mut commands, &mut meshes, &mats, o.id, o.version, &o.vessel);
+            spawn_vessel(&mut commands, &mut meshes, &mats, sim.generation, o.id, o.version, &o.vessel);
         }
     }
 
     for (_, view, mut tr, children) in &mut roots {
-        let Some(o) = sim.objects.iter().find(|o| o.id == view.id && o.version == view.version) else { continue };
+        let Some(o) = current(view) else { continue };
         tr.translation = render_vec(o.state.pos - focus.0);
         tr.rotation = render_rot(o.state.attitude);
         let com = mass_properties(&o.vessel).com;
@@ -501,3 +507,63 @@ pub fn draw_orbits(sim: Res<Sim>, focus: Res<Focus>, cam: Res<crate::camera::Orb
     }
 }
 
+
+// ---------- Schwerpunkt und Druckpunkt ----------
+
+/// Markierungen für Schwer- und Druckpunkt anzeigen (Taste C).
+#[derive(Resource, Default)]
+pub struct ShowCenters(pub bool);
+
+/// Eigene Gizmo-Gruppe: wird über allem gezeichnet, auch durch die Rakete.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct MarkerGizmos;
+
+pub fn setup_marker_gizmos(mut store: ResMut<GizmoConfigStore>) {
+    let (config, _) = store.config_mut::<MarkerGizmos>();
+    config.depth_bias = -1.0;
+    config.line.width = 3.0;
+}
+
+pub struct Centers {
+    pub com: SimVec3<Inertial>,
+    pub cop: SimVec3<Inertial>,
+    /// Abstand Druckpunkt hinter Schwerpunkt (m); positiv = stabil.
+    pub margin: f64,
+    /// Anstellwinkel über 90°: das Schiff fliegt mit dem Heck voran.
+    pub tail_first: bool,
+}
+
+/// Schwer- und Druckpunkt des aktiven Schiffs. Der Druckpunkt gilt für den
+/// aktuellen Anstellwinkel (mindestens 3°); im Vakuum wird mit Luft auf
+/// Meereshöhe gerechnet, damit man die Rakete trotzdem beurteilen kann.
+pub fn centers(sim: &Sim) -> Option<Centers> {
+    let ship = sim.ship();
+    let s = &ship.state;
+    let body = &sim.body;
+    let mut atm = body.atmosphere.sample(s.altitude(body));
+    if atm.density <= 0.0 {
+        atm = body.atmosphere.sample(0.0);
+    }
+    let surf = s.surface_velocity(body);
+    let speed = surf.length().max(50.0);
+    let aoa = if surf.length() > 1.0 { s.nose().dot(surf / surf.length()).clamp(-1.0, 1.0).acos() } else { 0.0 };
+    let alpha = aoa.clamp(3f64.to_radians(), 60f64.to_radians());
+    let com = mass_properties(&ship.vessel).com;
+    let z = vessel::aero::center_of_pressure(&ship.vessel, &atm, speed, alpha)?;
+    let cop = s.pos + s.attitude.apply(sim_core::Vec3::new(0.0, 0.0, z - com.z()));
+    Some(Centers { com: s.pos, cop, margin: com.z() - z, tail_first: aoa > std::f64::consts::FRAC_PI_2 })
+}
+
+pub fn draw_centers(sim: Res<Sim>, focus: Res<Focus>, show: Res<ShowCenters>, mut gizmos: Gizmos<MarkerGizmos>) {
+    if !show.0 {
+        return;
+    }
+    let Some(c) = centers(&sim) else { return };
+    let com = render_vec(c.com - focus.0);
+    let cop = render_vec(c.cop - focus.0);
+    let yellow = Color::srgb(1.0, 0.85, 0.1);
+    let cyan = Color::srgb(0.2, 0.8, 1.0);
+    gizmos.sphere(Isometry3d::from_translation(com), 0.45, yellow);
+    gizmos.sphere(Isometry3d::from_translation(cop), 0.45, cyan);
+    gizmos.line(com, cop, if c.margin > 0.0 { Color::srgb(0.3, 1.0, 0.3) } else { Color::srgb(1.0, 0.25, 0.2) });
+}

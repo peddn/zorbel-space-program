@@ -33,6 +33,8 @@ Mesas Software-Treiber (`mesa-vulkan-drivers`, Adapter "llvmpipe").
 Befehlstasten (Z, X, P, T, M, R, Komma, Punkt) gelten nach ihrer Beschriftung,
 funktionieren also auf QWERTZ wie auf QWERTY. Gehaltene Tasten (WASD, QE,
 Shift, Strg) gelten nach ihrer Position.
+| C | Schwerpunkt (gelb) und Druckpunkt (blau) anzeigen, mit Stabilitätsangabe |
+| F | Neustart mit/ohne Finnen |
 | R | Neustart |
 
 ## Aufbau
@@ -72,11 +74,24 @@ Shift, Strg) gelten nach ihrer Position.
   Kräften oder schneller Drehung, lang im kräftefreien Flug, und ein
   langer Schritt endet spätestens am Atmosphärenrand, damit er nicht durch
   die Lufthülle springt. Das ist Numerik, keine andere Physik.
-- **Aerodynamik pro Teil.** Jedes Teil bekommt seine Luftkraft am eigenen
-  Ort: Stirnflächen mit Verdeckung im Stapel, Kegelmantel, Queranströmung,
-  Platten mit Anstellwinkel, Transschall-Anstieg. Stabilität, Dämpfung und
-  Biegelasten folgen daraus ohne Sonderregeln. Steuerflächen bestimmen ihre
-  Wirkrichtung selbst aus der aktuellen Anströmung.
+- **Physikmodell getrennt von der Darstellung.** Jedes Teil hat in seiner
+  Teiledatei eine einfache Hülle (`hull`: Zylinder, Kegelstumpf, Platte), die
+  in Polygone zerlegt wird. Eigenschaften, die im Teil selbst stecken (Masse,
+  Festigkeit, Aufprallgrenze, Triebwerk), sind Parameter. Alles, was von der
+  Anordnung abhängt (Luftkräfte, Verdeckung, Bodenkontakt, später Wärme),
+  folgt aus dem Polygonmodell des ganzen Schiffs. Optionale Faktoren
+  `drag_factor`/`lift_factor` erlauben Abstimmung, ohne die Formel zu ändern.
+- **Einheitliches Luftmodell** (`vessel::aero`, `vessel::geometry`): Verdeckung
+  über das ganze Schiff per Tiefenpuffer aus 18 Richtungen (senkrecht
+  angeströmt sind nur Spitze und Finnenkanten frei). Anströmung zerlegt in
+  Längs- und Queranteil (Allen/Perkins): Druck nach modifizierter
+  Newton-Theorie mit Machabhängigkeit, Sog auf Rückflächen, Reibung, und
+  Auftrieb nach Schlankkörpertheorie dort, wo das Schiff breiter wird
+  (Rumpf-Flügel-Fläche exakt, Seitenverhältnis nach Helmbold). Ruder drehen
+  nur die Anströmung des Teils. Druck- und Schwerpunkt ergeben sich daraus;
+  eine Rakete ohne Finnen ist instabil und schlägt um.
+  Geprüft: Rumpf CNα 2,07 (Munk/Barrowman 2,0), Nasen-Druckpunkt nach
+  Barrowman, Zylinder quer Cd 1,20, längs 0,93.
 - **Triebwerke** haben einen festen Massenstrom; der Schub folgt dem Isp,
   der linear vom Umgebungsdruck abhängt (am Boden 188 kN, im Vakuum 215 kN).
 - **Boden als Zwangsbedingung, nicht als Feder.** Pro Schritt wird zuerst
@@ -102,8 +117,11 @@ Shift, Strg) gelten nach ihrer Position.
 - Nur ein Himmelskörper (SOI-Wechsel folgt).
 - Keine Erwärmung beim Wiedereintritt (Thermik folgt).
 - Steuerflächen schlagen ohne Stellgeschwindigkeit aus.
-- Aerodynamik einfach gehalten: kein Auftrieb von Rumpfteilen, keine
-  Verdeckung durch Radialteile, ein Luftzustand für das ganze Schiff.
+- Finnenauftrieb nach Schlankkörpertheorie liegt etwa 1,45-fach über
+  Barrowman (Rumpf-Mitnahme ohne Heck dahinter wird überschätzt); Raketen
+  sind dadurch etwas stabiler als in der Wirklichkeit.
+- Auftrieb machunabhängig; kein Wellenwiderstand nach Flächenregel; ein
+  Luftzustand für das ganze Schiff; Hüllen aus je einem Grundkörper.
 - Der Boden ist die glatte Kugel mit mittlerem Radius (kein Gelände).
 - Kontaktpunkte sind die Ränder der Stirnflächen (Achteck) und die Ecken
   der Platten, keine Mantelflächen.

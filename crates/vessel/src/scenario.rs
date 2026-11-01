@@ -23,7 +23,13 @@ pub fn test_planet() -> CelestialBody {
 
 /// Zweistufige Rakete aus den fünf Basisteilen.
 pub fn first_rocket(lib: &PartLibrary) -> Vessel {
-    let mut b = VesselBuilder::new("Erstflug", lib.part("kapsel"));
+    first_rocket_with(lib, true)
+}
+
+/// Dieselbe Rakete, wahlweise ohne Finnen (zum Ausprobieren der Stabilität).
+pub fn first_rocket_with(lib: &PartLibrary, fins: bool) -> Vessel {
+    let name = if fins { "Erstflug" } else { "Erstflug ohne Finnen" };
+    let mut b = VesselBuilder::new(name, lib.part("kapsel"));
     let t2 = b.stack_below(0, lib.part("tank"));
     let e2 = b.stack_below(t2, lib.part("triebwerk"));
     let dec = b.stack_below(e2, lib.part("entkoppler"));
@@ -31,7 +37,9 @@ pub fn first_rocket(lib: &PartLibrary) -> Vessel {
     let t1b = b.stack_below(t1a, lib.part("tank"));
     let t1c = b.stack_below(t1b, lib.part("tank"));
     let e1 = b.stack_below(t1c, lib.part("triebwerk"));
-    b.radial_symmetric(t1c, lib.part("steuerflaeche"), 4, -0.5);
+    if fins {
+        b.radial_symmetric(t1c, lib.part("steuerflaeche"), 4, -0.5);
+    }
     // Höchste Stufe zuerst: 1 = Zündung unten, 0 = Trennen + Zündung oben
     b.set_stage(e1, 1).set_stage(dec, 0).set_stage(e2, 0);
     b.build()

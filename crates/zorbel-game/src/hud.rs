@@ -46,7 +46,7 @@ fn km(m: f64) -> String {
     if m.abs() >= 10_000.0 { format!("{:.1} km", m / 1000.0) } else { format!("{m:.0} m") }
 }
 
-pub fn update_hud(sim: Res<Sim>, mut flight: Query<&mut Text, With<FlightText>>, mut msgs: Query<&mut Text, (With<MessageText>, Without<FlightText>)>) {
+pub fn update_hud(sim: Res<Sim>, centers: Res<crate::render::ShowCenters>, mut flight: Query<&mut Text, With<FlightText>>, mut msgs: Query<&mut Text, (With<MessageText>, Without<FlightText>)>) {
     let ship = sim.ship();
     let body = &sim.body;
     let s = &ship.state;
@@ -70,9 +70,19 @@ pub fn update_hud(sim: Res<Sim>, mut flight: Query<&mut Text, With<FlightText>>,
     } else {
         "Im Flug".to_string()
     };
+    let stability = match (centers.0, crate::render::centers(&sim)) {
+        (true, Some(c)) if c.tail_first => "\nFliegt mit dem Heck voran (umgeschlagen)".to_string(),
+        (true, Some(c)) => format!(
+            "\nDruckpunkt {:.1} m {} Schwerpunkt ({})",
+            c.margin.abs(),
+            if c.margin > 0.0 { "hinter" } else { "vor" },
+            if c.margin > 0.0 { "stabil" } else { "instabil" }
+        ),
+        _ => String::new(),
+    };
     let warp = if sim.warp_limited { format!("{}× (begrenzt)", sim.warp()) } else { format!("{}×", sim.warp()) };
     let text = format!(
-        "ZORBEL SPACE PROGRAM\n\
+        "ZORBEL SPACE PROGRAM – {}\n\
          T+ {:.1} s   Zeitraffer {warp}\n\
          Höhe        {}\n\
          v Oberfl.   {:.0} m/s\n\
@@ -83,7 +93,8 @@ pub fn update_hud(sim: Res<Sim>, mut flight: Query<&mut Text, With<FlightText>>,
          Schub {:.0} kN   Gas {:.0} %\n\
          Treibstoff  {:.0} kg   Teile {}\n\
          Lagehalter  {}   Autopilot {autopilot}\n\
-         {status}",
+         {status}{stability}",
+        ship.vessel.name,
         s.time,
         km(s.altitude(body)),
         s.surface_velocity(body).length(),
@@ -100,7 +111,7 @@ pub fn update_hud(sim: Res<Sim>, mut flight: Query<&mut Text, With<FlightText>>,
         t.0 = text.clone();
     }
     let mut m: String = sim.messages.iter().map(|(t, s)| format!("T+{t:>7.1}  {s}\n")).collect();
-    m.push_str("\nLeer Stufe · Shift/Strg Gas · Z/X voll/aus · WASD QE Lage (Eingriff schaltet Autopilot ab) · T Lagehalter · P Autopilot\n, . Zeitraffer · M Karte · rechte Maus Kamera · Rad Zoom · R Neustart");
+    m.push_str("\nLeer Stufe · Shift/Strg Gas · Z/X voll/aus · WASD QE Lage (Eingriff schaltet Autopilot ab) · T Lagehalter · P Autopilot\n, . Zeitraffer · M Karte · C Schwer-/Druckpunkt · F mit/ohne Finnen · rechte Maus Kamera · Rad Zoom · R Neustart");
     for mut t in &mut msgs {
         t.0 = m.clone();
     }
@@ -118,6 +129,8 @@ pub enum Command {
     CutThrottle,
     Map,
     Restart,
+    ToggleFins,
+    ToggleCenters,
 }
 
 /// Befehlstasten nach ihrer Beschriftung (logische Taste), damit z. B. „Z“
@@ -140,6 +153,8 @@ pub fn command_for(ev: &KeyboardInput) -> Option<Command> {
         "x" => Command::CutThrottle,
         "m" => Command::Map,
         "r" => Command::Restart,
+        "f" => Command::ToggleFins,
+        "c" => Command::ToggleCenters,
         _ => return None,
     })
 }
@@ -150,15 +165,21 @@ pub fn keyboard(
     time: Res<Time>,
     mut sim: ResMut<Sim>,
     mut cam: ResMut<crate::camera::OrbitCamera>,
+    mut centers: ResMut<crate::render::ShowCenters>,
 ) {
     let dt = time.delta_secs_f64();
     let commands: Vec<Command> = events.read().filter_map(command_for).collect();
     for cmd in commands {
         match cmd {
             Command::Restart => {
-                *sim = Sim::new();
+                *sim = Sim::with_fins(sim.fins);
                 return;
             }
+            Command::ToggleFins => {
+                *sim = Sim::with_fins(!sim.fins);
+                return;
+            }
+            Command::ToggleCenters => centers.0 = !centers.0,
             Command::Stage => sim.stage(),
             Command::Autopilot => sim.toggle_autopilot(),
             Command::Sas => sim.input.sas = !sim.input.sas,

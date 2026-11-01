@@ -24,7 +24,9 @@ impl Plugin for ZorbelPlugin {
             .insert_resource(camera::OrbitCamera::default())
             .insert_resource(render::Focus::default())
             .insert_resource(ClearColor(Color::BLACK))
-            .add_systems(Startup, (render::setup_planet, render::setup_part_materials))
+            .insert_resource(render::ShowCenters::default())
+            .init_gizmo_group::<render::MarkerGizmos>()
+            .add_systems(Startup, (render::setup_planet, render::setup_part_materials, render::setup_marker_gizmos))
             .add_systems(PostStartup, hud::setup_hud)
             .add_systems(
                 Update,
@@ -34,6 +36,7 @@ impl Plugin for ZorbelPlugin {
                     render::sync_ground_patch,
                     render::sync_vessels,
                     render::draw_orbits,
+                    render::draw_centers,
                     camera::place_camera,
                     hud::update_hud,
                 )
