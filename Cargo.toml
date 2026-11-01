@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sim-core", "crates/vessel", "crates/flight-demo"]
+members = ["crates/sim-core", "crates/vessel", "crates/flight-demo", "crates/zorbel-game"]
 
 [workspace.package]
 edition = "2024"
@@ -15,3 +15,8 @@ vessel = { path = "crates/vessel" }
 
 [profile.dev]
 opt-level = 1
+
+# Abhängigkeiten (Bevy) auch im Debug-Build optimieren: das Spiel bleibt
+# flüssig, eigener Code kompiliert trotzdem schnell.
+[profile.dev.package."*"]
+opt-level = 2

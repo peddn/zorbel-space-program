@@ -7,9 +7,29 @@ Aerodynamik pro Teil, Lastberechnung und Staging.
 ## Starten
 
 ```sh
-cargo test --workspace          # alle Tests
-cargo run --bin zorbel          # Testflug in eine 100-km-Kreisbahn
+cargo test --workspace                          # alle Tests
+cargo run --bin zorbel                          # Headless-Testflug in eine 100-km-Kreisbahn
+cargo run -p zorbel-game                        # Spiel im Fenster
+cargo run -p zorbel-game -- --screenshots       # fester Flug ohne Fenster, Bilder nach screenshots/
 ```
+
+Linux braucht für das Spiel die üblichen Bevy-Abhängigkeiten (Vulkan- oder
+GL-Treiber, X11 oder Wayland). Ohne GPU reicht für den Screenshot-Modus
+Mesas Software-Treiber (`mesa-vulkan-drivers`, Adapter "llvmpipe").
+
+### Steuerung
+
+| Taste | Wirkung |
+|---|---|
+| Leertaste | Nächste Stufe (die erste löst die Startklammern) |
+| Shift / Strg | Gas auf / ab, Z voll, X aus |
+| W S / A D / Q E | Nicken / Gieren / Rollen |
+| T | Lagehalter an/aus |
+| P | Autopilot: Aufstieg in eine 100-km-Kreisbahn |
+| , / . | Zeitraffer langsamer / schneller (1× bis 100 000×) |
+| M | Karte (weit herauszoomen) |
+| Rechte Maus, Mausrad | Kamera drehen, zoomen |
+| R | Neustart |
 
 ## Aufbau
 
@@ -17,6 +37,7 @@ cargo run --bin zorbel          # Testflug in eine 100-km-Kreisbahn
 |---|---|
 | `sim-core` | f64, typisierte Bezugssysteme (`Vec3<Inertial>`, `Vec3<VesselFrame>`, …), Keplerbahnen über universelle Variablen, RK4. Keine Engine-Abhängigkeit. |
 | `vessel` | Teile aus RON-Dateien, Schiff als Baum, Masse/Schwerpunkt/Trägheit, Lasten in den Verbindungen, Staging, Trennung, Bewegung. |
+| `zorbel-game` | Darstellung mit Bevy: Planet, Schiffe, Bahnlinien, Kamera, Anzeige, Steuerung, Screenshot-Modus. Rendert in f32 relativ zum Kamerafokus. |
 | `flight-demo` | Headless-Testflug durch die Atmosphäre in die Umlaufbahn; die Unterstufe fällt ungesteuert zurück. |
 | `assets/parts/` | Die fünf Basisteile: Kapsel, Tank, Triebwerk, Steuerfläche, Entkoppler. |
 
@@ -77,7 +98,6 @@ cargo run --bin zorbel          # Testflug in eine 100-km-Kreisbahn
 
 ## Nächste Schritte
 
-1. Darstellung mit Bevy: Planet, Schiff, Bahnlinie, kamerarelatives Rendering.
-2. Zweiter Himmelskörper und SOI-Übergänge.
-3. Wiedereintrittserwärmung.
-4. Stoßbehandlung (Impulsfestigkeit) für Landung und Kollision.
+1. Zweiter Himmelskörper und SOI-Übergänge.
+2. Wiedereintrittserwärmung.
+3. Stoßbehandlung (Impulsfestigkeit) für Landung und Kollision.
