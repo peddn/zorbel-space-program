@@ -84,6 +84,18 @@ Shift, Strg) gelten nach ihrer Position.
   Oberrand glatt (C²) auf null. Luftkräfte und Triebwerksschub hängen
   stetig von Dichte und Druck ab. Ein Test zeigt: der Flug durch immer
   dünnere Luft konvergiert linear gegen den Vakuumflug.
+- **Drehung exakt, auch im Zeitraffer** (`vessel::rotation`). Zusammengebaute
+  Schiffe sind unsymmetrisch; der Trägheitstensor wird pro Schritt auf
+  Hauptachsen gebracht, die kräftefreie Drehung als symmetrisches Splitting
+  aus drei exakten Drehungen um die Hauptachsen gelöst (2. Ordnung). Der
+  Drehimpuls bleibt exakt erhalten, die Energie ohne Drift (Fehler 5·10⁻⁷
+  über 10⁶ s). Lange Schritte werden in Teilschritte zerlegt, deren Weite aus
+  einer Erhaltungsgröße folgt (|L|/I_min), sonst würde die Energie driften.
+  Ein trudelndes Schiff trudelt im Zeitraffer genau wie in Echtzeit, samt
+  Dzhanibekov-Effekt, und bremst den Zeitraffer nicht.
+- **Lagehalter im Zeitraffer.** Bei langen Schritten bremsen die
+  Reaktionsräder in jedem Teilschritt mit ihrem echten Moment, also gleich
+  schnell wie in Echtzeit. Steht das Schiff, hält es die Lage.
 - **Nur die Schrittweite passt sich an** (`suggest_dt`): kurz bei starken
   Kräften oder schneller Drehung, lang im kräftefreien Flug, und ein
   langer Schritt endet spätestens am Atmosphärenrand, damit er nicht durch
@@ -157,8 +169,8 @@ Shift, Strg) gelten nach ihrer Position.
 Vereinbarte Reihenfolge:
 
 1. ~~Universum mit zwei Systemen, Körperbaum, SOI-Übergänge~~ (erledigt).
-2. Einheitliche kräftefreie Drehung für beliebige Trägheit (auch im
-   Zeitraffer; Dzhanibekov-Test), Lagehalter im Zeitraffer.
+2. ~~Kräftefreie Drehung für beliebige Trägheit, Lagehalter im Zeitraffer~~
+   (erledigt).
 3. Navball mit sieben Lagehalter-Modi.
 4. Mehrere Ressourcen, Sprungantrieb und Sprungtreibstoff, Sprung zwischen
    den Systemen mit Vorschau der Ankunftsbahn.

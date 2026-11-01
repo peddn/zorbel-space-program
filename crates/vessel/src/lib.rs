@@ -19,6 +19,7 @@ pub mod ground;
 pub mod loads;
 pub mod mass;
 pub mod part;
+pub mod rotation;
 pub mod scenario;
 pub mod vessel;
 

@@ -80,6 +80,12 @@ pub fn update_hud(sim: Res<Sim>, centers: Res<crate::render::ShowCenters>, mut f
         ),
         _ => String::new(),
     };
+    let spin = s.omega.length().to_degrees();
+    let sas = match (sim.input.sas, spin > 0.2) {
+        (false, _) => "aus",
+        (true, true) => "an, bremst",
+        (true, false) => "an, hält",
+    };
     let warp = if sim.warp_limited { format!("{}× (begrenzt)", sim.warp()) } else { format!("{}×", sim.warp()) };
     let text = format!(
         "ZORBEL SPACE PROGRAM – {}\n\
@@ -93,7 +99,8 @@ pub fn update_hud(sim: Res<Sim>, centers: Res<crate::render::ShowCenters>, mut f
          Mach {:.2}   q {:.1} kPa\n\
          Schub {:.0} kN   Gas {:.0} %\n\
          Treibstoff  {:.0} kg   Teile {}\n\
-         Lagehalter  {}   Autopilot {autopilot}\n\
+         Lagehalter  {sas}   Drehung {spin:.1}°/s\n\
+         Autopilot   {autopilot}\n\
          {status}{stability}",
         ship.vessel.name,
         s.time,
@@ -108,7 +115,6 @@ pub fn update_hud(sim: Res<Sim>, centers: Res<crate::render::ShowCenters>, mut f
         sim.applied_throttle * 100.0,
         fuel,
         ship.vessel.len(),
-        if sim.input.sas { "an" } else { "aus" },
     );
     for mut t in &mut flight {
         t.0 = text.clone();

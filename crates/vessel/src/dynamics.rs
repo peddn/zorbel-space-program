@@ -6,8 +6,9 @@
 //! oder im Vakuum ist, ändert nur die Größe der Kräfte, nie den Codepfad.
 //!
 //! Verfahren: Kick-Drift-Kick. Die Gravitation des Zentralkörpers wird
-//! exakt über die Keplerbahn gelöst ("Drift"), alle anderen Kräfte wirken
-//! als halbe Stöße davor und danach. Sind die anderen Kräfte null, ist der
+//! exakt über die Keplerbahn gelöst, die kräftefreie Drehung (inklusive
+//! Kreiseleffekt) über [`crate::rotation`] ("Drift"); alle anderen Kräfte
+//! und Momente wirken als halbe Stöße davor und danach. Sind die anderen Kräfte null, ist der
 //! Schritt exakt die Keplerbahn; deshalb darf er dann beliebig lang sein.
 //! Die Schrittweite ([`suggest_dt`]) ist eine rein numerische Wahl und
 //! ändert die Physik nicht.
@@ -21,6 +22,7 @@ use crate::geometry::HullGeometry;
 use crate::ground;
 use crate::loads::{ExternalLoad, LoadAnalysis, Motion, joint_loads, motion_from_loads};
 use crate::mass::{MassProperties, mass_properties};
+use crate::rotation;
 use crate::vessel::Vessel;
 use sim_core::kepler::{self, StateVector};
 use sim_core::{AtmosphereSample, BodyId, CelestialBody, GeoPosition, Inertial, Rotation, Vec3, VesselFrame};
@@ -91,6 +93,10 @@ pub struct Controls {
     /// Drehkommando je Achse, -1..1 (Schiffssystem). Wirkt auf
     /// Reaktionsräder, Schubvektor und Steuerflächen gleichzeitig.
     pub rotation: Vec3<VesselFrame>,
+    /// Lagehalter in langen Schritten (Zeitraffer): Die Reaktionsräder
+    /// bremsen die Drehung in jedem Teilschritt der freien Drehung, mit
+    /// ihrem vollen Moment, bis zum Stillstand.
+    pub damp_rotation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +130,9 @@ struct Evaluation {
     burn: Vec<(usize, f64)>,
     flameout: bool,
     motion: Motion,
+    /// Winkelbeschleunigung nur aus äußeren Momenten (ohne Kreiseleffekt,
+    /// der steckt in der freien Drehung).
+    alpha_ext: Vec3<VesselFrame>,
     thrust: f64,
     aero_force: f64,
     air: AtmosphereSample,
@@ -204,11 +213,13 @@ fn evaluate(v: &Vessel, geo: &HullGeometry, mp: &MassProperties, s: &RigidState,
     }
 
     let motion = motion_from_loads(mp, &ext, s.omega);
+    let alpha_ext = motion.alpha + mp.inertia.solve(s.omega.cross(mp.inertia.apply(s.omega)));
     Evaluation {
         ext,
         burn,
         flameout,
         motion,
+        alpha_ext,
         thrust: thrust_total,
         aero_force: aero_total.length(),
         air,
@@ -225,16 +236,17 @@ pub fn step(v: &mut Vessel, s: &mut RigidState, c: &Controls, body: &CelestialBo
 
     // Kick
     s.vel += s.attitude.apply(ev.motion.accel) * (dt / 2.0);
-    s.omega += ev.motion.alpha * (dt / 2.0);
+    s.omega += ev.alpha_ext * (dt / 2.0);
 
     // Drift: exakte Keplerbahn, freie Drehung
     s.time += dt;
     let o = kepler::propagate(s.orbit(), body.mu, dt);
     s.pos = o.r;
     s.vel = o.v;
-    if s.omega != Vec3::ZERO {
-        s.attitude = (s.attitude * Rotation::from_scaled_axis(s.omega * dt)).renormalize();
-    }
+    let brake = c.damp_rotation.then(|| wheel_torque(v));
+    let spin = rotation::drift(s.attitude, s.omega, &mp0.inertia, dt, brake);
+    s.attitude = spin.attitude;
+    s.omega = spin.omega;
 
     // Treibstoff, anteilig aus allen erreichbaren Tanks
     for &(engine, mdot) in &ev.burn {
@@ -257,7 +269,7 @@ pub fn step(v: &mut Vessel, s: &mut RigidState, c: &Controls, body: &CelestialBo
     // Kick
     let ev2 = evaluate(v, &geo, &mp1, s, c, body);
     s.vel += s.attitude.apply(ev2.motion.accel) * (dt / 2.0);
-    s.omega += ev2.motion.alpha * (dt / 2.0);
+    s.omega += ev2.alpha_ext * (dt / 2.0);
 
     // Boden: Zwangsbedingung am Schrittende
     let contact = ground::resolve(v, &mp1, s, body, dt);
@@ -285,11 +297,20 @@ pub fn step(v: &mut Vessel, s: &mut RigidState, c: &Controls, body: &CelestialBo
     }
 }
 
+/// Größtes Moment der Reaktionsräder je Schiffsachse (N·m).
+pub fn wheel_torque(v: &Vessel) -> f64 {
+    v.parts.iter().map(|p| p.def.command_torque()).sum()
+}
+
 /// Schrittweite für den nächsten Schritt, höchstens `requested`.
 ///
 /// - Starke Störkräfte (Schub, dichte Luft) → kurze Schritte, die Länge
 ///   wächst stetig, je schwächer sie werden.
-/// - Schnelle Drehung → kurze Schritte (höchstens ~1° pro Schritt).
+/// - Schnelle Drehung → kurze Schritte (höchstens ~1° pro Schritt), aber
+///   nur, wenn äußere Kräfte wirken (Luft, Schub, Boden), denn die hängen
+///   von der Lage ab. Die kräftefreie Drehung ist in jedem Schritt exakt
+///   ([`crate::rotation`]); ein trudelndes Schiff bremst den Zeitraffer
+///   nicht.
 /// - Oberhalb der Atmosphäre: Schritt endet spätestens beim Eintritt, damit
 ///   kein langer Kepler-Schritt durch die Lufthülle "hindurchspringt".
 /// - Ebenso endet er, bevor irgendein Teil den Boden erreichen kann; in
@@ -314,7 +335,8 @@ pub fn suggest_dt(requested: f64, v: &Vessel, s: &RigidState, last: Option<&Step
         dt = dt.min(DT_PHYSICS * (1.0 / r.proper_accel).clamp(1.0, 500.0));
     }
     let w = s.omega.length();
-    if w > 0.0 {
+    let forced = r <= quiet || last.is_some_and(|r| r.proper_accel > 0.0);
+    if w > 0.0 && forced {
         dt = dt.min((0.02 / w).max(DT_PHYSICS));
     }
     if r > quiet
@@ -489,7 +511,7 @@ mod tests {
                 omega: Vec3::ZERO,
                 contact_force: 0.0,
             };
-            let c = Controls { throttle: 1.0, rotation: Vec3::new(0.2, 0.0, 0.0) };
+            let c = Controls { throttle: 1.0, rotation: Vec3::new(0.2, 0.0, 0.0), ..Default::default() };
             for _ in 0..500 {
                 step(&mut v, &mut s, &c, &body, DT_PHYSICS);
             }
@@ -576,7 +598,7 @@ mod tests {
         no_wheel.parts[0].def = std::sync::Arc::new(def);
         for cmd in [Vec3::X, -Vec3::X, Vec3::Y, Vec3::Z] {
             let mut s = base;
-            step(&mut no_wheel, &mut s, &Controls { throttle: 0.0, rotation: cmd }, &body, DT_PHYSICS);
+            step(&mut no_wheel, &mut s, &Controls { throttle: 0.0, rotation: cmd, ..Default::default() }, &body, DT_PHYSICS);
             assert!(s.omega.dot(cmd) > 0.0, "Kommando {cmd:?} → ω {:?}", s.omega);
         }
         let _ = &mut v;
@@ -666,5 +688,83 @@ mod tests {
         let dt = suggest_dt(1.0e6, &two_stage(), &s, None, &body);
         let at = kepler::propagate(s.orbit(), body.mu, dt).r.length();
         assert!((at - body.quiet_radius()).abs() < 1e-3, "endet bei {at}");
+    }
+
+    /// Unsymmetrisches Schiff: Kapsel, Tank, zwei Finnen auf einer Seite.
+    fn lopsided() -> Vessel {
+        let lib = PartLibrary::builtin();
+        let mut b = VesselBuilder::new("Schief", lib.part("kapsel"));
+        let t = b.stack_below(0, lib.part("tank"));
+        b.radial(t, lib.part("steuerflaeche"), 0.6, -0.3);
+        b.radial(t, lib.part("steuerflaeche"), 1.9, -0.8);
+        b.build()
+    }
+
+    fn tumbling_in_orbit(body: &CelestialBody) -> RigidState {
+        let r = body.radius + 100_000.0;
+        RigidState {
+            body: body.id,
+            time: 0.0,
+            pos: Vec3::new(r, 0.0, 0.0),
+            vel: Vec3::new(0.0, (body.mu / r).sqrt(), 0.0),
+            attitude: Rotation::IDENTITY,
+            omega: Vec3::new(0.4, 0.9, 0.3),
+            contact_force: 0.0,
+        }
+    }
+
+    fn angular_momentum(v: &Vessel, s: &RigidState) -> Vec3<Inertial> {
+        s.attitude.apply(mass_properties(v).inertia.apply(s.omega))
+    }
+
+    #[test]
+    fn lopsided_vessel_has_tilted_principal_axes() {
+        let i = mass_properties(&lopsided()).inertia.0;
+        let off = i.x_axis.y.abs() + i.x_axis.z.abs() + i.y_axis.z.abs();
+        assert!(off > 1e-3 * i.x_axis.x, "keine Deviationsmomente: {i:?}");
+    }
+
+    #[test]
+    fn tumbling_does_not_slow_time_warp() {
+        let body = crate::scenario::test_planet();
+        let mut v = lopsided();
+        let s = tumbling_in_orbit(&body);
+        let dt = suggest_dt(1.0e5, &v, &s, None, &body);
+        assert!(dt > 1000.0, "Schritt {dt} s");
+        // ein Schritt mit Bericht: weiterhin keine Begrenzung
+        let mut s2 = s;
+        let r = step(&mut v, &mut s2, &Controls::default(), &body, 10.0);
+        assert!(suggest_dt(1.0e5, &v, &s2, Some(&r), &body) > 1000.0);
+    }
+
+    #[test]
+    fn tumbling_in_warp_equals_real_time() {
+        // Ein Schritt von 600 s gegen 6000 Schritte à 0,1 s: gleiche Lage,
+        // gleiche Drehung, Drehimpuls exakt erhalten.
+        let body = crate::scenario::test_planet();
+        let mut v = lopsided();
+        let s0 = tumbling_in_orbit(&body);
+        let l0 = angular_momentum(&v, &s0);
+        let mut a = s0;
+        step(&mut v, &mut a, &Controls::default(), &body, 600.0);
+        let mut b = s0;
+        for _ in 0..6000 {
+            step(&mut v, &mut b, &Controls::default(), &body, 0.1);
+        }
+        assert!(a.attitude.quat().angle_between(b.attitude.quat()) < 0.01);
+        assert!((a.omega - b.omega).length() < 0.01 * s0.omega.length());
+        for s in [a, b] {
+            assert!((angular_momentum(&v, &s) - l0).length() < 1e-9 * l0.length());
+        }
+    }
+
+    #[test]
+    fn wheels_brake_tumble_in_long_steps() {
+        let body = crate::scenario::test_planet();
+        let mut v = lopsided();
+        let mut s = tumbling_in_orbit(&body);
+        let c = Controls { damp_rotation: true, ..Default::default() };
+        step(&mut v, &mut s, &c, &body, 3600.0);
+        assert!(s.omega.length() < 1e-9, "dreht noch mit {:?}", s.omega);
     }
 }

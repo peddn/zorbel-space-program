@@ -95,7 +95,7 @@ impl Plan {
         } else {
             Vec3::ZERO
         };
-        Controls { throttle: self.throttle, rotation }
+        Controls { throttle: self.throttle, rotation, ..Default::default() }
     }
 }
 

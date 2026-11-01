@@ -15,13 +15,21 @@ use vessel::{Controls, PartLibrary, RigidState, StepReport, Vessel};
 
 static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Zeitraffer-Stufen. Ab 10× regelt niemand mehr die Lage (Schritte zu lang).
+/// Zeitraffer-Stufen. In langen Schritten regelt der Lagehalter über die
+/// Reaktionsräder in der freien Drehung (siehe `ship_controls`).
 pub const WARP_LEVELS: [f64; 8] = [1.0, 2.0, 4.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0];
 /// Höchstens so viele Physikschritte pro Objekt und Bild.
 const MAX_STEPS_PER_FRAME: usize = 4_000;
 /// Größte Drehrate bei voller Handsteuerung (rad/s): Nicken/Gieren, Rollen.
 const MANUAL_RATE: f64 = 0.26; // ≈ 15°/s
 const MANUAL_ROLL_RATE: f64 = 0.52; // ≈ 30°/s
+/// Ab dieser Schrittweite (s) regelt der Lagehalter über die freie Drehung.
+const LONG_STEP: f64 = 0.1;
+/// Drehrate (rad/s), unter der der Lagehalter im Zeitraffer die Lage hält.
+const HOLD_RATE: f64 = 1e-6;
+/// Größte Lageabweichung (rad), die der Lagehalter im Zeitraffer sofort
+/// ausgleicht.
+const MAX_HOLD_CORRECTION: f64 = 0.0175;
 
 pub struct SimObject {
     /// Eindeutig über die ganze Sitzung; die Darstellung hängt daran.
@@ -280,6 +288,9 @@ impl Sim {
 
             let o = &mut self.objects[i];
             let (report, soi) = step(&mut o.vessel, &mut o.state, &controls, &self.universe, dt);
+            if is_ship && controls.damp_rotation && self.input.sas && self.autopilot.is_none() {
+                self.hold_attitude_in_warp();
+            }
             if let Some((_, to)) = soi
                 && is_ship
             {
@@ -311,15 +322,47 @@ impl Sim {
         }
     }
 
+    /// Lagehalter im Zeitraffer: Haben die Räder die Drehung aufgehoben,
+    /// hält das Schiff die Ziellage exakt (die Räder könnten jede kleine
+    /// Abweichung innerhalb eines Schritts ausgleichen).
+    fn hold_attitude_in_warp(&mut self) {
+        let st = &mut self.objects[0].state;
+        if st.omega.length() > HOLD_RATE {
+            return;
+        }
+        let nose = st.nose();
+        // Nur kleine Abweichungen ausgleichen; ein Sprung der Lage wäre
+        // unphysikalisch. Sonst gilt die aktuelle Lage als Ziel.
+        let hold = match self.sas_target {
+            Some(t) if t.normalize_or_zero().dot(nose) > MAX_HOLD_CORRECTION.cos() => t,
+            _ => *self.sas_target.insert(nose),
+        };
+        let fix = glam::DQuat::from_rotation_arc(nose.raw(), hold.normalize_or_zero().raw());
+        st.attitude = sim_core::Rotation::from_quat(fix * st.attitude.quat());
+        st.omega = Vec3::ZERO;
+    }
+
     fn ship_controls(&mut self, dt: f64, throttle: f64, autopilot_target: Option<Vec3<Inertial>>) -> Controls {
         let o = &self.objects[0];
         let thrust = o.last.as_ref().map_or(0.0, |r| r.thrust);
-        // Bei langen Schritten (Zeitraffer) wäre jede Regelung instabil.
-        if dt > 0.1 {
-            return Controls { throttle, rotation: Vec3::ZERO };
+        // Lange Schritte (Zeitraffer): Ein Regler pro Schritt wäre instabil.
+        // Stattdessen bremsen die Reaktionsräder in jedem Teilschritt der
+        // freien Drehung, mit ihrem echten Moment; steht das Schiff, wird
+        // die Lage gehalten (siehe `hold_attitude_in_warp`).
+        if autopilot_target.is_some() {
+            // Der Autopilot steuert; danach hält der Lagehalter die Lage, in
+            // der er das Schiff übernimmt, nicht ein altes Ziel.
+            self.sas_target = None;
+        }
+        if dt > LONG_STEP {
+            let damp = self.input.sas || autopilot_target.is_some();
+            if self.input.sas && o.state.omega.length() > HOLD_RATE {
+                self.sas_target = None; // wie in Echtzeit: erst bremsen, dann halten
+            }
+            return Controls { throttle, rotation: Vec3::ZERO, damp_rotation: damp };
         }
         if let Some(target) = autopilot_target {
-            return Controls { throttle, rotation: attitude_control(&o.vessel, &o.state, target, thrust.max(1.0)) };
+            return Controls { throttle, rotation: attitude_control(&o.vessel, &o.state, target, thrust.max(1.0)), ..Default::default() };
         }
         // Handsteuerung gibt eine Drehrate vor, der Regler setzt sie mit
         // allen Stellmitteln um. So bleibt das Schiff bei jeder Masse gleich
@@ -328,23 +371,23 @@ impl Sim {
         if manual != Vec3::ZERO {
             self.sas_target = None;
             let want = Vec3::new(manual.x() * MANUAL_RATE, manual.y() * MANUAL_RATE, manual.z() * MANUAL_ROLL_RATE);
-            return Controls { throttle, rotation: rate_control(&o.vessel, &o.state, want, thrust.max(1.0)) };
+            return Controls { throttle, rotation: rate_control(&o.vessel, &o.state, want, thrust.max(1.0)), ..Default::default() };
         }
         if !self.input.sas {
             self.sas_target = None;
-            return Controls { throttle, rotation: Vec3::ZERO };
+            return Controls { throttle, rotation: Vec3::ZERO, ..Default::default() };
         }
         // Lagehalter: erst die Drehung abbremsen, dann die Lage halten, in
         // der das Schiff zum Stehen kommt (kein Zurückschwingen).
         if self.sas_target.is_none() {
             let w = o.state.omega;
             if (w.x().powi(2) + w.y().powi(2)).sqrt() > 0.005 {
-                return Controls { throttle, rotation: rate_control(&o.vessel, &o.state, Vec3::ZERO, thrust.max(1.0)) };
+                return Controls { throttle, rotation: rate_control(&o.vessel, &o.state, Vec3::ZERO, thrust.max(1.0)), ..Default::default() };
             }
             self.sas_target = Some(o.state.nose());
         }
         let hold = self.sas_target.unwrap_or(o.state.nose());
-        Controls { throttle, rotation: attitude_control(&o.vessel, &o.state, hold, thrust.max(1.0)) }
+        Controls { throttle, rotation: attitude_control(&o.vessel, &o.state, hold, thrust.max(1.0)), ..Default::default() }
     }
 }
 
@@ -462,6 +505,102 @@ mod tests {
         s.take_manual_control();
         assert!(s.autopilot.is_none());
         assert_eq!(s.input.throttle, 1.0, "Gas bleibt, wo der Autopilot es hatte");
+    }
+
+    /// Schiff antriebslos in 100 km Höhe, trudelnd.
+    fn tumbling_in_orbit(sas: bool) -> Sim {
+        let mut s = Sim::new();
+        s.clamped = false;
+        s.input.sas = sas;
+        let body = s.body().clone();
+        let r = body.radius + 100_000.0;
+        let st = &mut s.objects[0].state;
+        st.pos = Vec3::new(r, 0.0, 0.0);
+        st.vel = Vec3::new(0.0, (body.mu / r).sqrt(), 0.0);
+        st.omega = Vec3::new(0.3, 0.5, 0.2);
+        s
+    }
+
+    fn angular_momentum(s: &Sim) -> Vec3<Inertial> {
+        let o = s.ship();
+        o.state.attitude.apply(vessel::mass::mass_properties(&o.vessel).inertia.apply(o.state.omega))
+    }
+
+    #[test]
+    fn tumbling_continues_at_full_warp() {
+        let mut s = tumbling_in_orbit(false);
+        let l0 = angular_momentum(&s);
+        s.warp_index = WARP_LEVELS.len() - 1;
+        let t0 = s.time();
+        s.advance(1.0);
+        assert!(!s.warp_limited, "Trudeln bremst den Zeitraffer");
+        assert!((s.time() - t0 - 100_000.0).abs() < 1e-6);
+        assert!((angular_momentum(&s) - l0).length() < 1e-9 * l0.length());
+        assert!(s.ship().state.omega.length() > 0.1);
+    }
+
+    /// Zeit, bis der Lagehalter das Trudeln gestoppt hat, bei Schritten `dt`.
+    fn time_to_stop(dt: f64) -> f64 {
+        let mut s = tumbling_in_orbit(true);
+        let t0 = s.time();
+        while s.ship().state.omega.length() > 1e-3 && s.time() - t0 < 600.0 {
+            let t = s.time();
+            s.advance_to(t + dt);
+        }
+        s.time() - t0
+    }
+
+    #[test]
+    fn sas_brakes_in_warp_as_fast_as_in_real_time() {
+        let o = &tumbling_in_orbit(true).objects[0];
+        let l = o.state.attitude.inverse().apply(angular_momentum(&tumbling_in_orbit(true)));
+        let tau = vessel::dynamics::wheel_torque(&o.vessel);
+        // Untere Schranke: jede Achse für sich mit vollem Radmoment
+        let ideal = l.x().abs().max(l.y().abs()).max(l.z().abs()) / tau;
+        let real_time = time_to_stop(0.05);
+        // Schritte von 1 s sind lang genug für den Zeitraffer-Lagehalter
+        let warp = time_to_stop(1.0);
+        assert!((warp - ideal).abs() < 1.0 + 0.1 * ideal, "Zeitraffer {warp:.1} s, ideal {ideal:.1} s");
+        assert!((real_time - ideal).abs() < 0.2 * ideal, "Echtzeit {real_time:.1} s, ideal {ideal:.1} s");
+    }
+
+    #[test]
+    fn sas_holds_attitude_in_warp() {
+        let mut s = tumbling_in_orbit(true);
+        s.warp_index = 5; // 1000×
+        s.advance(1.0);
+        let nose = s.ship().state.nose();
+        assert_eq!(s.ship().state.omega, Vec3::ZERO);
+        assert!(s.sas_target.is_some());
+        s.advance(5.0);
+        assert!(s.ship().state.nose().dot(nose) > 1.0 - 1e-12, "Lage nicht gehalten");
+        assert!(!s.warp_limited);
+    }
+
+    #[test]
+    fn sas_after_autopilot_holds_current_attitude() {
+        // Freiflug des Autopiloten in langen Schritten, danach Echtzeit.
+        // Früher setzte der Lagehalter im Zeitraffer ein Ziel (Lage im
+        // Freiflug), das nach der Zirkularisierung veraltet war; das Schiff
+        // schwenkte mit ~8°/s dorthin zurück.
+        let mut s = Sim::new();
+        s.toggle_autopilot();
+        let mut t = 0.0;
+        while s.autopilot.is_some() && t < 400.0 {
+            let coast = s.autopilot.as_ref().is_some_and(|a| a.phase() == Phase::Coast);
+            t += if coast { 20.0 } else { 0.5 };
+            s.advance_to(t);
+        }
+        assert!(s.autopilot.is_none(), "Umlaufbahn nicht erreicht");
+        let nose = s.ship().state.nose();
+        for _ in 0..40 {
+            t += 0.05;
+            s.advance_to(t);
+            assert!(nose_rate_deg(&s) < 1.0, "schwenkt mit {:.1}°/s", nose_rate_deg(&s));
+        }
+        s.warp_index = 5;
+        s.advance(1.0);
+        assert!(s.ship().state.nose().dot(nose) > 0.9999, "Lage springt");
     }
 
     #[test]

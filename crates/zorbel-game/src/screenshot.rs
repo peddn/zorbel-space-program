@@ -158,6 +158,6 @@ pub fn run(dir: &str) {
             update(&mut apps);
         }
         let sim = apps.main.world().resource::<Sim>();
-        println!("{path}  T+{:.1}s  Höhe {:.1} km", sim.time(), sim.ship().state.altitude(sim.body()) / 1000.0);
+        println!("{path}  T+{:.1}s  Höhe {:.1} km  Drehung {:.2}°/s", sim.time(), sim.ship().state.altitude(sim.body()) / 1000.0, sim.ship().state.omega.length().to_degrees());
     }
 }
