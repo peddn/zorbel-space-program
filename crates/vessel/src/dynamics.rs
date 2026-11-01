@@ -11,8 +11,13 @@
 //! Schritt exakt die Keplerbahn; deshalb darf er dann beliebig lang sein.
 //! Die Schrittweite ([`suggest_dt`]) ist eine rein numerische Wahl und
 //! ändert die Physik nicht.
+//!
+//! Der Boden ist eine Zwangsbedingung am Ende jedes Schritts
+//! ([`crate::ground`]); seine Stützkraft geht wie jede andere äußere Kraft
+//! in die Lastberechnung ein.
 
 use crate::aero::{PartAero, aero_geometry, part_force};
+use crate::ground;
 use crate::loads::{ExternalLoad, LoadAnalysis, Motion, joint_loads, motion_from_loads};
 use crate::mass::{MassProperties, mass_properties};
 use crate::vessel::Vessel;
@@ -32,6 +37,8 @@ pub struct RigidState {
     pub attitude: Rotation<VesselFrame, Inertial>,
     /// Winkelgeschwindigkeit im Schiffssystem.
     pub omega: Vec3<VesselFrame>,
+    /// Geglättete Bodenkontaktkraft in N (siehe [`crate::ground`]).
+    pub contact_force: f64,
 }
 
 impl RigidState {
@@ -67,6 +74,7 @@ impl RigidState {
             vel: body.corotation_velocity(pos),
             attitude,
             omega: attitude.inverse().apply(body.angular_velocity()),
+            contact_force: 0.0,
         }
     }
 }
@@ -95,6 +103,14 @@ pub struct StepReport {
     pub dynamic_pressure: f64,
     /// Aktive Triebwerke ohne Treibstoff.
     pub flameout: bool,
+    /// Bodenkontakt in diesem Schritt.
+    pub touching_ground: bool,
+    /// Annäherungsgeschwindigkeit an den Boden beim Aufsetzen (m/s).
+    pub impact_speed: f64,
+    /// Teil, das beim Aufprall zerstört wurde, mit Aufprallgeschwindigkeit.
+    pub crash: Option<(usize, f64)>,
+    /// Geglättete Bodenkontaktkraft in N.
+    pub ground_force: f64,
 }
 
 /// Alle Kräfte für einen Zustand.
@@ -201,7 +217,6 @@ pub fn step(v: &mut Vessel, s: &mut RigidState, c: &Controls, body: &CelestialBo
     let geo = aero_geometry(v);
     let mp0 = mass_properties(v);
     let ev = evaluate(v, &geo, &mp0, s, c, body);
-    let loads = joint_loads(v, &mp0, &ev.motion, &ev.ext);
 
     // Kick
     s.vel += s.attitude.apply(ev.motion.accel) * (dt / 2.0);
@@ -239,16 +254,29 @@ pub fn step(v: &mut Vessel, s: &mut RigidState, c: &Controls, body: &CelestialBo
     s.vel += s.attitude.apply(ev2.motion.accel) * (dt / 2.0);
     s.omega += ev2.motion.alpha * (dt / 2.0);
 
+    // Boden: Zwangsbedingung am Schrittende
+    let contact = ground::resolve(v, &mp1, s, body, dt);
+
+    // Lasten aus allen äußeren Kräften am Schrittende, inklusive Boden
+    let mut ext = ev2.ext;
+    ext.extend(contact.loads);
+    let motion = motion_from_loads(&mp1, &ext, s.omega);
+    let loads = joint_loads(v, &mp1, &motion, &ext);
+
     let q = 0.5 * ev.air.density * ev.airspeed * ev.airspeed;
     StepReport {
         loads,
         thrust: ev.thrust,
         aero_force: ev.aero_force,
-        proper_accel: ev.motion.accel.length(),
+        proper_accel: motion.accel.length().max(ev.motion.accel.length()),
         mach: ev.airspeed / ev.air.speed_of_sound,
         dynamic_pressure: q,
         air: ev.air,
         flameout: ev.flameout,
+        touching_ground: contact.touching,
+        impact_speed: contact.impact_speed,
+        crash: contact.crash,
+        ground_force: s.contact_force,
     }
 }
 
@@ -259,8 +287,22 @@ pub fn step(v: &mut Vessel, s: &mut RigidState, c: &Controls, body: &CelestialBo
 /// - Schnelle Drehung → kurze Schritte (höchstens ~1° pro Schritt).
 /// - Oberhalb der Atmosphäre: Schritt endet spätestens beim Eintritt, damit
 ///   kein langer Kepler-Schritt durch die Lufthülle "hindurchspringt".
-pub fn suggest_dt(requested: f64, s: &RigidState, last: Option<&StepReport>, body: &CelestialBody) -> f64 {
+/// - Ebenso endet er, bevor irgendein Teil den Boden erreichen kann; in
+///   Bodennähe nur kurze Schritte.
+/// - Ohne Vorwissen (erster Schritt) in Luft oder Bodennähe: kurz.
+pub fn suggest_dt(requested: f64, v: &Vessel, s: &RigidState, last: Option<&StepReport>, body: &CelestialBody) -> f64 {
     let mut dt = requested;
+    let r = s.pos.length();
+    let ground = body.radius + ground::extent(v, &mass_properties(v)) + 1.0;
+    let quiet = body.quiet_radius().max(ground);
+    if r <= quiet && last.is_none() {
+        dt = dt.min(DT_PHYSICS);
+    }
+    if r <= ground {
+        dt = dt.min(DT_PHYSICS);
+    } else if let Some(t) = kepler::time_until_below(s.orbit(), body.mu, ground, dt) {
+        dt = dt.min(t.max(DT_PHYSICS));
+    }
     if let Some(r) = last
         && r.proper_accel > 0.0
     {
@@ -270,8 +312,7 @@ pub fn suggest_dt(requested: f64, s: &RigidState, last: Option<&StepReport>, bod
     if w > 0.0 {
         dt = dt.min((0.02 / w).max(DT_PHYSICS));
     }
-    let quiet = body.quiet_radius();
-    if s.pos.length() > quiet
+    if r > quiet
         && let Some(t) = kepler::time_until_below(s.orbit(), body.mu, quiet, dt)
     {
         dt = dt.min(t.max(DT_PHYSICS));
@@ -302,6 +343,7 @@ pub fn separate(v: &Vessel, s: &RigidState, child: usize, impulse: f64) -> (Sepa
             vel: s.vel + s.attitude.apply(s.omega.cross(d) + axis * (push / mpp.mass)),
             attitude: s.attitude,
             omega: s.omega,
+            contact_force: 0.0,
         };
         Separated { vessel, state }
     };
@@ -350,6 +392,7 @@ mod tests {
             vel: Vec3::new(0.0, 2_200.0, 0.0),
             attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(0.3)),
             omega: Vec3::new(0.05, 0.0, 0.2),
+            contact_force: 0.0,
         }
     }
 
@@ -407,6 +450,7 @@ mod tests {
             vel: Vec3::new(0.0, (body.mu / r).sqrt(), 0.0),
             attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(0.3)),
             omega: Vec3::ZERO,
+            contact_force: 0.0,
         };
         let expect = kepler::propagate(s.orbit(), body.mu, 600.0);
         step(&mut v, &mut s, &Controls::default(), &body, 600.0);
@@ -430,6 +474,7 @@ mod tests {
                 vel: Vec3::new(300.0, 100.0, 0.0),
                 attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)),
                 omega: Vec3::ZERO,
+                contact_force: 0.0,
             };
             let c = Controls { throttle: 1.0, rotation: Vec3::new(0.2, 0.0, 0.0) };
             for _ in 0..500 {
@@ -468,6 +513,7 @@ mod tests {
             // Boden voran: Spitze (+Z) zeigt nach oben
             attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)),
             omega: Vec3::ZERO,
+            contact_force: 0.0,
         };
         for _ in 0..8_000 {
             step(&mut v, &mut s, &Controls::default(), &body, DT_PHYSICS);
@@ -498,6 +544,7 @@ mod tests {
             vel: Vec3::new(300.0, 0.0, 0.0),
             attitude: Rotation::from_quat(glam::DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)),
             omega: Vec3::ZERO,
+            contact_force: 0.0,
         };
         // Kapsel ohne Reaktionsrad betrachten: nur Steuerflächen wirken
         let mut no_wheel = v.clone();
@@ -549,8 +596,9 @@ mod tests {
             vel: Vec3::ZERO,
             attitude: Rotation::IDENTITY,
             omega: Vec3::ZERO,
+            contact_force: 0.0,
         };
-        let dt = suggest_dt(1.0e6, &s, None, &body);
+        let dt = suggest_dt(1.0e6, &two_stage(), &s, None, &body);
         let at = kepler::propagate(s.orbit(), body.mu, dt).r.length();
         assert!((at - body.quiet_radius()).abs() < 1e-3, "endet bei {at}");
     }

@@ -1,6 +1,8 @@
 //! Fluganzeige und Tastatursteuerung.
 
 use crate::sim::{Sim, WARP_LEVELS};
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use sim_core::{Vec3 as SimVec3, VesselFrame};
 use vessel::autopilot::Phase;
@@ -59,6 +61,15 @@ pub fn update_hud(sim: Res<Sim>, mut flight: Query<&mut Text, With<FlightText>>,
         Some(Phase::Circularize) => "Zirkularisierung",
         Some(Phase::Done) | None => "aus",
     };
+    let status = if sim.ship_lost {
+        "ZERSTÖRT".to_string()
+    } else if sim.clamped {
+        "Startklammern halten".to_string()
+    } else if r.is_some_and(|r| r.touching_ground) {
+        format!("Am Boden, Stützkraft {:.0} kN", r.map_or(0.0, |r| r.ground_force / 1000.0))
+    } else {
+        "Im Flug".to_string()
+    };
     let warp = if sim.warp_limited { format!("{}× (begrenzt)", sim.warp()) } else { format!("{}×", sim.warp()) };
     let text = format!(
         "ZORBEL SPACE PROGRAM\n\
@@ -71,7 +82,8 @@ pub fn update_hud(sim: Res<Sim>, mut flight: Query<&mut Text, With<FlightText>>,
          Mach {:.2}   q {:.1} kPa\n\
          Schub {:.0} kN   Gas {:.0} %\n\
          Treibstoff  {:.0} kg   Teile {}\n\
-         Lagehalter  {}   Autopilot {autopilot}",
+         Lagehalter  {}   Autopilot {autopilot}\n\
+         {status}",
         s.time,
         km(s.altitude(body)),
         s.surface_velocity(body).length(),
@@ -88,52 +100,128 @@ pub fn update_hud(sim: Res<Sim>, mut flight: Query<&mut Text, With<FlightText>>,
         t.0 = text.clone();
     }
     let mut m: String = sim.messages.iter().map(|(t, s)| format!("T+{t:>7.1}  {s}\n")).collect();
-    m.push_str("\nLeer Stufe · Shift/Strg Gas · Z/X voll/aus · WASD QE Lage · T Lagehalter · P Autopilot\n, . Zeitraffer · M Karte · rechte Maus Kamera · Rad Zoom · R Neustart");
+    m.push_str("\nLeer Stufe · Shift/Strg Gas · Z/X voll/aus · WASD QE Lage (Eingriff schaltet Autopilot ab) · T Lagehalter · P Autopilot\n, . Zeitraffer · M Karte · rechte Maus Kamera · Rad Zoom · R Neustart");
     for mut t in &mut msgs {
         t.0 = m.clone();
     }
 }
 
-pub fn keyboard(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut sim: ResMut<Sim>) {
+/// Befehl einer Taste, die einmal pro Druck wirkt.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Command {
+    Stage,
+    Autopilot,
+    Sas,
+    WarpUp,
+    WarpDown,
+    FullThrottle,
+    CutThrottle,
+    Map,
+    Restart,
+}
+
+/// Befehlstasten nach ihrer Beschriftung (logische Taste), damit z. B. „Z“
+/// auf QWERTZ und QWERTY dieselbe Taste ist. Gehaltene Tasten (Lage, Gas)
+/// werden dagegen nach ihrer Position abgefragt, wie in Spielen üblich.
+pub fn command_for(ev: &KeyboardInput) -> Option<Command> {
+    if ev.state != ButtonState::Pressed || ev.repeat {
+        return None;
+    }
+    if ev.key_code == KeyCode::Space {
+        return Some(Command::Stage);
+    }
+    let Key::Character(c) = &ev.logical_key else { return None };
+    Some(match c.to_lowercase().as_str() {
+        "p" => Command::Autopilot,
+        "t" => Command::Sas,
+        "." | ":" => Command::WarpUp,
+        "," | ";" => Command::WarpDown,
+        "z" => Command::FullThrottle,
+        "x" => Command::CutThrottle,
+        "m" => Command::Map,
+        "r" => Command::Restart,
+        _ => return None,
+    })
+}
+
+pub fn keyboard(
+    mut events: MessageReader<KeyboardInput>,
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut sim: ResMut<Sim>,
+    mut cam: ResMut<crate::camera::OrbitCamera>,
+) {
     let dt = time.delta_secs_f64();
-    if keys.just_pressed(KeyCode::KeyR) {
-        *sim = Sim::new();
-        return;
+    let commands: Vec<Command> = events.read().filter_map(command_for).collect();
+    for cmd in commands {
+        match cmd {
+            Command::Restart => {
+                *sim = Sim::new();
+                return;
+            }
+            Command::Stage => sim.stage(),
+            Command::Autopilot => sim.toggle_autopilot(),
+            Command::Sas => sim.input.sas = !sim.input.sas,
+            Command::WarpUp => sim.warp_index = (sim.warp_index + 1).min(WARP_LEVELS.len() - 1),
+            Command::WarpDown => sim.warp_index = sim.warp_index.saturating_sub(1),
+            Command::FullThrottle => {
+                sim.take_manual_control();
+                sim.input.throttle = 1.0;
+            }
+            Command::CutThrottle => {
+                sim.take_manual_control();
+                sim.input.throttle = 0.0;
+            }
+            Command::Map => cam.distance = if cam.distance < 1.0e5 { 3.5e6 } else { 32.0 },
+        }
     }
-    if keys.just_pressed(KeyCode::Space) {
-        sim.stage();
+
+    let up = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let down = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if up || down {
+        sim.take_manual_control();
+        let delta = (up as i32 - down as i32) as f64 * dt;
+        sim.input.throttle = (sim.input.throttle + delta).clamp(0.0, 1.0);
     }
-    if keys.just_pressed(KeyCode::KeyP) {
-        sim.toggle_autopilot();
-    }
-    if keys.just_pressed(KeyCode::KeyT) {
-        sim.input.sas = !sim.input.sas;
-    }
-    if keys.just_pressed(KeyCode::Period) {
-        sim.warp_index = (sim.warp_index + 1).min(WARP_LEVELS.len() - 1);
-    }
-    if keys.just_pressed(KeyCode::Comma) {
-        sim.warp_index = sim.warp_index.saturating_sub(1);
-    }
-    let mut throttle = sim.input.throttle;
-    if keys.pressed(KeyCode::ShiftLeft) {
-        throttle += dt;
-    }
-    if keys.pressed(KeyCode::ControlLeft) {
-        throttle -= dt;
-    }
-    if keys.just_pressed(KeyCode::KeyZ) {
-        throttle = 1.0;
-    }
-    if keys.just_pressed(KeyCode::KeyX) {
-        throttle = 0.0;
-    }
-    sim.input.throttle = throttle.clamp(0.0, 1.0);
+
     let axis = |pos: KeyCode, neg: KeyCode| (keys.pressed(pos) as i32 - keys.pressed(neg) as i32) as f64;
-    sim.input.rotation =
+    let rotation =
         SimVec3::<VesselFrame>::new(axis(KeyCode::KeyS, KeyCode::KeyW), axis(KeyCode::KeyD, KeyCode::KeyA), axis(KeyCode::KeyE, KeyCode::KeyQ));
+    if rotation != SimVec3::ZERO {
+        sim.take_manual_control();
+    }
+    sim.input.rotation = rotation;
 }
 
 pub fn advance_sim(time: Res<Time>, mut sim: ResMut<Sim>) {
     sim.advance(time.delta_secs_f64().min(0.1));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(code: KeyCode, text: &str) -> KeyboardInput {
+        KeyboardInput {
+            key_code: code,
+            logical_key: Key::Character(text.into()),
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        }
+    }
+
+    #[test]
+    fn commands_follow_the_key_label() {
+        // QWERTZ: die Taste mit der Aufschrift Z sitzt auf der Position "Y"
+        assert_eq!(command_for(&press(KeyCode::KeyY, "z")), Some(Command::FullThrottle));
+        // mit gedrückter Shift-Taste (Gas auf) kommt ein großes Z
+        assert_eq!(command_for(&press(KeyCode::KeyZ, "Z")), Some(Command::FullThrottle));
+        assert_eq!(command_for(&press(KeyCode::KeyZ, "y")), None);
+        assert_eq!(command_for(&press(KeyCode::Period, ":")), Some(Command::WarpUp));
+        let mut repeat = press(KeyCode::KeyP, "p");
+        repeat.repeat = true;
+        assert_eq!(command_for(&repeat), None);
+    }
 }

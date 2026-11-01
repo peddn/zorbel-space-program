@@ -6,6 +6,7 @@
     attach: Stack,
     shape: Cone(radius_bottom: 0.6, radius_top: 0.45, length: 1.4),
     node_strength: (tension: 300000.0, compression: 1500000.0, shear: 250000.0, bending: 400000.0, torsion: 150000.0),
+    crash_tolerance: 8.0,              // m/s Aufprall am Boden
     modules: [
         Engine(
             thrust_vac: 215000.0,      // N im Vakuum, Vollschub

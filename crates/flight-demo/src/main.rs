@@ -125,7 +125,7 @@ fn main() {
         }
 
         // --- Ein Schritt, immer dieselbe Physik ---
-        let dt = suggest_dt(plan.requested_dt, &s, last.as_ref(), &body);
+        let dt = suggest_dt(plan.requested_dt, &ship, &s, last.as_ref(), &body);
         let controls: Controls = plan.controls(&ship, &s, dt, last.as_ref().map_or(0.0, |r| r.thrust));
         if dt > 1.0 {
             println!("T+{t:>6.1}s  Zeitraffer: ein Schritt über {dt:.1} s");
@@ -157,8 +157,8 @@ fn main() {
         if let Some(j) = report.loads.broken().next() {
             fail(format!("Strukturversagen T+{t:.1}s: {} ({})", ship.joint_label(j.child), j.critical.label()));
         }
-        if alt < 0.0 {
-            fail(format!("Aufschlag T+{t:.1}s"));
+        if let Some((part, speed)) = report.crash {
+            fail(format!("Aufschlag T+{t:.1}s mit {speed:.1} m/s ({})", ship.parts[part].def.name));
         }
         last = Some(report);
     }
@@ -178,7 +178,7 @@ fn main() {
     let horizon = 10.0 * el.period.unwrap();
     let mut prev = None;
     while tt < horizon {
-        let dt = suggest_dt(horizon - tt, &check, prev.as_ref(), &body);
+        let dt = suggest_dt(horizon - tt, &v_check, &check, prev.as_ref(), &body);
         prev = Some(step(&mut v_check, &mut check, &Controls::default(), &body, dt));
         tt += dt;
         n += 1;
@@ -195,7 +195,7 @@ fn main() {
         let (mut apogee, mut max_g, mut max_q, mut max_w, mut steps) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0);
         let mut max_load: (f64, String) = (0.0, String::new());
         loop {
-            let dt = suggest_dt(600.0, &ds, prev.as_ref(), &body);
+            let dt = suggest_dt(600.0, &dv, &ds, prev.as_ref(), &body);
             let r = step(&mut dv, &mut ds, &Controls::default(), &body, dt);
             t += dt;
             steps += 1;
@@ -209,25 +209,27 @@ fn main() {
             {
                 max_load = (j.utilization, format!("{} ({})", dv.joint_label(j.child), j.critical.label()));
             }
-            if let Some(j) = r.loads.broken().next() {
+            let crashed = r.crash;
+            let resting = r.touching_ground && ds.surface_velocity(&body).length() < 0.05;
+            if crashed.is_none() && !resting && let Some(j) = r.loads.broken().next() {
                 println!("{}: bricht T+{t:.1}s in {:.1} km Höhe an {}", dv.name, alt / 1000.0, dv.joint_label(j.child));
                 let (a, b) = separate(&dv, &ds, j.child, 0.0);
                 queue.push((t, b.state, b.vessel));
                 dv = a.vessel;
                 ds = a.state;
             }
-            if alt <= 0.0 || steps > 5_000_000 {
-                let end = if alt <= 0.0 {
-                    // Aufschlagort im mitdrehenden System, relativ zum Startplatz
-                    let g = ds.geo_position(&body);
-                    format!(
-                        "Aufschlag T+{t:.1}s mit {:.0} m/s, {:.1} km {} vom Startplatz",
-                        ds.surface_velocity(&body).length(),
-                        body.surface_distance(pad, g) / 1000.0,
-                        if g.longitude >= 0.0 { "östlich" } else { "westlich" }
-                    )
-                } else {
-                    "Abbruch: Schrittlimit".into()
+            if crashed.is_some() || resting || steps > 5_000_000 {
+                // Ort im mitdrehenden System, relativ zum Startplatz
+                let g = ds.geo_position(&body);
+                let place = format!(
+                    "{:.1} km {} vom Startplatz",
+                    body.surface_distance(pad, g) / 1000.0,
+                    if g.longitude >= 0.0 { "östlich" } else { "westlich" }
+                );
+                let end = match crashed {
+                    Some((part, speed)) => format!("zerschellt T+{t:.1}s mit {speed:.0} m/s ({}), {place}", dv.parts[part].def.name),
+                    None if resting => format!("liegt T+{t:.1}s, {place}"),
+                    None => "Abbruch: Schrittlimit".into(),
                 };
                 println!(
                     "{} ({} Teile): Gipfel {:.1} km, max. {:.0} kPa / {:.1} g / {:.1} rad/s (taumelt), {end}, {steps} Schritte",

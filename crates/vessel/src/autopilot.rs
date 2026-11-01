@@ -15,13 +15,20 @@ use sim_core::{CelestialBody, Inertial, Vec3, VesselFrame};
 /// (Reaktionsrad + Schubvektor), damit er bei jeder Masse gleich schnell
 /// und stabil reagiert.
 pub fn attitude_control(v: &Vessel, s: &RigidState, target: Vec3<Inertial>, thrust: f64) -> Vec3<VesselFrame> {
-    const RESPONSE: f64 = 0.4; // s, Zeitkonstante der Drehratenregelung
     let nose = s.nose();
     let axis = nose.cross(target);
     let angle = axis.length().atan2(nose.dot(target));
     let axis_body = s.attitude.inverse().apply(axis.normalize_or_zero());
     let want = axis_body * (angle * 0.8).min(0.2);
-    let err = Vec3::<VesselFrame>::new(want.x(), want.y(), 0.0) - s.omega;
+    rate_control(v, s, Vec3::new(want.x(), want.y(), 0.0), thrust)
+}
+
+/// Drehratenregler: Steuerkommando (−1..1 je Achse), das die
+/// Winkelgeschwindigkeit auf `want` (rad/s, Schiffssystem) bringt. Nutzt
+/// Reaktionsrad, Schubvektor und Steuerflächen gemeinsam.
+pub fn rate_control(v: &Vessel, s: &RigidState, want: Vec3<VesselFrame>, thrust: f64) -> Vec3<VesselFrame> {
+    const RESPONSE: f64 = 0.4; // s, Zeitkonstante der Drehratenregelung
+    let err = want - s.omega;
 
     let mp = mass_properties(v);
     let wheel: f64 = v.parts.iter().map(|p| p.def.command_torque()).sum();

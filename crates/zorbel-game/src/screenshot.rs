@@ -22,6 +22,8 @@ const HEIGHT: u32 = 720;
 
 struct Shot {
     name: &'static str,
+    /// Vorbereitung vor dem Abwarten (z. B. neues Szenario).
+    prepare: fn(&mut Sim),
     /// Simulation läuft weiter, bis das erfüllt ist.
     until: fn(&Sim, f64) -> bool,
     camera: OrbitCamera,
@@ -30,17 +32,28 @@ struct Shot {
 fn shots() -> Vec<Shot> {
     let cam = |distance: f32, pitch: f32, yaw: f32| OrbitCamera { yaw, pitch, distance };
     vec![
-        Shot { name: "01-startrampe", until: |_, _| true, camera: cam(32.0, 0.12, -0.7) },
-        Shot { name: "02-abheben", until: |s, _| s.time() >= 8.0, camera: cam(45.0, 0.05, -0.5) },
-        Shot { name: "03-max-q", until: |s, _| s.time() >= 57.0, camera: cam(40.0, 0.2, -1.1) },
-        Shot { name: "04-stufentrennung", until: |s, t0| s.objects.len() > 1 && s.time() >= t0 + 2.0, camera: cam(55.0, 0.25, -0.4) },
+        Shot { prepare: |_| {}, name: "01-startrampe", until: |_, _| true, camera: cam(32.0, 0.12, -0.7) },
+        Shot { prepare: |_| {}, name: "02-abheben", until: |s, _| s.time() >= 8.0, camera: cam(45.0, 0.05, -0.5) },
+        Shot { prepare: |_| {}, name: "03-max-q", until: |s, _| s.time() >= 57.0, camera: cam(40.0, 0.2, -1.1) },
+        Shot { prepare: |_| {}, name: "04-stufentrennung", until: |s, t0| s.objects.len() > 1 && s.time() >= t0 + 2.0, camera: cam(55.0, 0.25, -0.4) },
         Shot {
+            prepare: |_| {},
             name: "05-weltraum",
             until: |s, _| s.ship().state.altitude(&s.body) > 75_000.0,
             camera: cam(30.0, 0.35, -0.9),
         },
-        Shot { name: "06-umlaufbahn", until: |s, _| s.autopilot.is_none() && s.time() > 200.0, camera: cam(22.0, 0.15, -0.6) },
-        Shot { name: "07-karte", until: |_, _| true, camera: cam(3.2e6, 0.7, 0.4) },
+        Shot { prepare: |_| {}, name: "06-umlaufbahn", until: |s, _| s.autopilot.is_none() && s.time() > 200.0, camera: cam(22.0, 0.15, -0.6) },
+        Shot { prepare: |_| {}, name: "07-karte", until: |_, _| true, camera: cam(3.2e6, 0.7, 0.4) },
+        // Neuer Start von Hand: Klammern lösen ohne Gas, die Rakete muss stehen bleiben.
+        Shot {
+            prepare: |s| {
+                *s = Sim::new();
+                s.stage();
+            },
+            name: "08-ohne-gas-am-boden",
+            until: |s, _| s.time() >= 3.0,
+            camera: cam(32.0, 0.12, -0.7),
+        },
     ]
 }
 
@@ -78,6 +91,7 @@ pub fn run(dir: &str) {
     update(&mut apps);
     let mut started = false;
     for shot in shots() {
+        (shot.prepare)(&mut apps.main.world_mut().resource_mut::<Sim>());
         let t0 = apps.main.world().resource::<Sim>().time();
         loop {
             let world = apps.main.world_mut();

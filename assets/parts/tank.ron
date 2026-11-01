@@ -6,6 +6,7 @@
     attach: Stack,
     shape: Cylinder(radius: 0.625, length: 1.9),
     node_strength: (tension: 300000.0, compression: 1200000.0, shear: 250000.0, bending: 400000.0, torsion: 150000.0),
+    crash_tolerance: 8.0,              // m/s Aufprall am Boden
     modules: [
         FuelTank(capacity: 2000.0),    // kg Treibstoff (ein Einheitstreibstoff)
     ],

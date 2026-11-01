@@ -167,8 +167,15 @@ pub struct PartDef {
     pub attach: AttachKind,
     pub shape: Shape,
     pub node_strength: JointStrength,
+    /// Größte Aufprallgeschwindigkeit, die das Teil am Boden übersteht (m/s).
+    #[serde(default = "default_crash_tolerance")]
+    pub crash_tolerance: f64,
     #[serde(default)]
     pub modules: Vec<Module>,
+}
+
+fn default_crash_tolerance() -> f64 {
+    8.0
 }
 
 impl PartDef {

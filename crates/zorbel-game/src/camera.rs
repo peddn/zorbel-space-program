@@ -3,7 +3,7 @@
 
 use crate::render::render_vec;
 use crate::sim::Sim;
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use sim_core::{Inertial, Vec3 as SimVec3};
 
@@ -39,17 +39,19 @@ pub fn camera_input(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
-    keys: Res<ButtonInput<KeyCode>>,
 ) {
     if buttons.pressed(MouseButton::Right) {
         cam.yaw -= motion.delta.x * 0.005;
         cam.pitch = (cam.pitch + motion.delta.y * 0.005).clamp(-1.5, 1.5);
     }
-    if scroll.delta.y != 0.0 {
-        cam.distance = (cam.distance * 0.88f32.powf(scroll.delta.y)).clamp(4.0, 5.0e7);
-    }
-    if keys.just_pressed(KeyCode::KeyM) {
-        cam.distance = if cam.distance < 1.0e5 { 3.5e6 } else { 32.0 };
+    // Mausräder melden Rastungen (Zeilen), Touchpads und manche Systeme
+    // Pixel; beides auf "Rastungen" umrechnen.
+    let notches = match scroll.unit {
+        MouseScrollUnit::Line => scroll.delta.y,
+        MouseScrollUnit::Pixel => scroll.delta.y / 50.0,
+    };
+    if notches != 0.0 {
+        cam.distance = (cam.distance * 0.88f32.powf(notches)).clamp(4.0, 5.0e7);
     }
 }
 
