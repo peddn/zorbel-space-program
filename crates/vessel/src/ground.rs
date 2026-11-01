@@ -18,12 +18,10 @@
 
 use crate::loads::ExternalLoad;
 use crate::mass::MassProperties;
-use crate::part::Shape;
 use crate::vessel::Vessel;
 use crate::dynamics::RigidState;
 use glam::{DMat3, DVec3};
-use sim_core::{CelestialBody, PartLocal, Vec3, VesselFrame};
-use std::f64::consts::TAU;
+use sim_core::{CelestialBody, Vec3, VesselFrame};
 
 /// Abstand, ab dem ein Punkt als Kontakt zählt (m).
 pub const CONTACT_SLOP: f64 = 0.01;
@@ -32,46 +30,15 @@ pub const FRICTION: f64 = 0.8;
 /// Zeit, über die sich ein Aufprall in der Struktur verteilt (s).
 pub const IMPACT_TIME: f64 = 0.05;
 const ITERATIONS: usize = 30;
-const RIM_POINTS: usize = 8;
 
-/// Mögliche Kontaktpunkte: Ränder der Stirnflächen, Ecken der Platten.
+/// Kontaktpunkte: die Eckpunkte des Polygonmodells aller Teile.
 pub fn contact_points(v: &Vessel) -> Vec<(usize, Vec3<VesselFrame>)> {
-    let mut pts = Vec::new();
-    for (i, p) in v.parts.iter().enumerate() {
-        let mut local: Vec<Vec3<PartLocal>> = Vec::new();
-        let mut rim = |r: f64, z: f64| {
-            if r <= 1e-6 {
-                local.push(Vec3::new(0.0, 0.0, z));
-                return;
-            }
-            for k in 0..RIM_POINTS {
-                let a = TAU * k as f64 / RIM_POINTS as f64;
-                local.push(Vec3::new(r * a.cos(), r * a.sin(), z));
-            }
-        };
-        match p.def.shape {
-            Shape::Cylinder { radius, length } => {
-                rim(radius, -length / 2.0);
-                rim(radius, length / 2.0);
-            }
-            Shape::Cone { radius_bottom, radius_top, length } => {
-                rim(radius_bottom, -length / 2.0);
-                rim(radius_top, length / 2.0);
-            }
-            Shape::Plate { span, chord, .. } => {
-                for (x, z) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                    local.push(Vec3::new(x * span / 2.0, 0.0, z * chord / 2.0));
-                }
-            }
-        }
-        pts.extend(local.into_iter().map(|l| (i, p.origin + p.orientation.apply(l))));
-    }
-    pts
+    v.geometry().contact_points.clone()
 }
 
 /// Größter Abstand eines Kontaktpunkts vom Schwerpunkt.
 pub fn extent(v: &Vessel, mp: &MassProperties) -> f64 {
-    contact_points(v).iter().map(|(_, p)| (*p - mp.com).length()).fold(0.0, f64::max)
+    v.geometry().extent_from(mp.com)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -102,9 +69,11 @@ pub fn resolve(v: &Vessel, mp: &MassProperties, s: &mut RigidState, body: &Celes
     let rot: DMat3 = s.attitude.matrix();
     let pos = s.pos.raw();
     let com = mp.com.raw();
-    let mut contacts: Vec<Contact> = contact_points(v)
-        .into_iter()
-        .filter_map(|(part, p)| {
+    let geo = v.geometry();
+    let mut contacts: Vec<Contact> = geo
+        .contact_points
+        .iter()
+        .filter_map(|&(part, p)| {
             let r = rot * (p.raw() - com);
             let world = pos + r;
             let dist = world.length();
@@ -450,9 +419,9 @@ mod tests {
     fn tank_lying_on_its_side_stays_put() {
         let body = test_planet();
         let mut v = crate::vessel::VesselBuilder::new("Tank", PartLibrary::builtin().part("tank")).build();
-        // Die Randpunkte bilden ein Achteck; der Tank liegt auf einer Fläche
+        // Die Hülle ist ein Vieleck; der Tank liegt auf einer Fläche
         // (zwei Punkte je Stirnseite), nicht balancierend auf einer Kante.
-        let eighth = std::f64::consts::PI / 8.0;
+        let eighth = std::f64::consts::PI / crate::geometry::HULL_SIDES as f64;
         let site = GeoPosition { latitude: 0.3, longitude: 1.0, altitude: 0.625 * eighth.cos() };
         let mut s = RigidState::at_rest(&body, site, 0.0);
         // um 90° kippen (Längsachse waagrecht), dann um die Längsachse auf eine Fläche drehen

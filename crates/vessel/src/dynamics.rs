@@ -16,7 +16,8 @@
 //! ([`crate::ground`]); seine Stützkraft geht wie jede andere äußere Kraft
 //! in die Lastberechnung ein.
 
-use crate::aero::{PartAero, aero_geometry, part_force};
+use crate::aero::{AeroForce, part_forces};
+use crate::geometry::HullGeometry;
 use crate::ground;
 use crate::loads::{ExternalLoad, LoadAnalysis, Motion, joint_loads, motion_from_loads};
 use crate::mass::{MassProperties, mass_properties};
@@ -128,7 +129,7 @@ struct Evaluation {
 /// Probeausschlag, um die Wirkrichtung einer Steuerfläche zu bestimmen.
 const DEFLECTION_PROBE: f64 = 0.05;
 
-fn evaluate(v: &Vessel, geo: &[PartAero], mp: &MassProperties, s: &RigidState, c: &Controls, body: &CelestialBody) -> Evaluation {
+fn evaluate(v: &Vessel, geo: &HullGeometry, mp: &MassProperties, s: &RigidState, c: &Controls, body: &CelestialBody) -> Evaluation {
     let air = body.atmosphere.sample(s.altitude(body));
     let cmd = Vec3::<VesselFrame>::new(
         c.rotation.x().clamp(-1.0, 1.0),
@@ -176,26 +177,25 @@ fn evaluate(v: &Vessel, geo: &[PartAero], mp: &MassProperties, s: &RigidState, c
             }
         }
 
-        // Luftkraft am eigenen Ort des Teils
-        let point = p.com();
-        let lever = point - mp.com;
-        let v_part = v_body + omega_rel.cross(lever);
-        let v_local = p.orientation.inverse().apply(v_part);
-        let force_at = |defl: f64| p.orientation.apply(part_force(p, &geo[i], v_local, &air, defl));
+        // Luftkräfte des Teils, mit der Anströmung an seinem eigenen Ort
+        let lever = p.com() - mp.com;
+        let air_rel = -(v_body + omega_rel.cross(lever));
+        let forces_at = |defl: f64| part_forces(v, geo, i, air_rel, &air, defl);
+        let torque_of = |fs: &[AeroForce; 3]| fs.iter().map(|a| (a.point - mp.com).cross(a.force)).sum::<Vec3<VesselFrame>>();
         let deflection = match p.def.control_surface() {
             Some(cs) if cmd.length_squared() > 0.0 => {
                 // Welche Drehung erzeugt ein positiver Ausschlag gerade?
-                let f0 = force_at(0.0);
-                let d_torque = lever.cross(force_at(DEFLECTION_PROBE) - f0);
+                let d_torque = torque_of(&forces_at(DEFLECTION_PROBE)) - torque_of(&forces_at(0.0));
                 let len = d_torque.length();
                 if len > 0.0 { cs.max_deflection_rad * cmd.dot(d_torque / len).clamp(-1.0, 1.0) } else { 0.0 }
             }
             _ => 0.0,
         };
-        let f = force_at(deflection);
-        if f != Vec3::ZERO {
-            aero_total += f;
-            ext.push(ExternalLoad { part: i, force: f, point, torque: Vec3::ZERO });
+        for a in forces_at(deflection) {
+            if a.force != Vec3::ZERO {
+                aero_total += a.force;
+                ext.push(ExternalLoad { part: i, force: a.force, point: a.point, torque: Vec3::ZERO });
+            }
         }
     }
 
@@ -214,7 +214,7 @@ fn evaluate(v: &Vessel, geo: &[PartAero], mp: &MassProperties, s: &RigidState, c
 
 /// Ein Zeitschritt. Gilt überall: am Boden, in der Luft, im Vakuum.
 pub fn step(v: &mut Vessel, s: &mut RigidState, c: &Controls, body: &CelestialBody, dt: f64) -> StepReport {
-    let geo = aero_geometry(v);
+    let geo = v.geometry();
     let mp0 = mass_properties(v);
     let ev = evaluate(v, &geo, &mp0, s, c, body);
 
@@ -515,24 +515,32 @@ mod tests {
             omega: Vec3::ZERO,
             contact_force: 0.0,
         };
+        // Lage festhalten: ein kurzer Zylinder würde sonst zu taumeln
+        // beginnen; geprüft wird hier nur das Gleichgewicht längs.
+        let attitude = s.attitude;
         for _ in 0..8_000 {
             step(&mut v, &mut s, &Controls::default(), &body, DT_PHYSICS);
+            s.attitude = attitude;
+            s.omega = Vec3::ZERO;
         }
-        let air = atm.sample(0.0);
+        // Endgeschwindigkeit: dort, wo der Widerstand des Modells das Gewicht trägt
+        let air = atm.sample(s.altitude(&body));
         let g = body.mu / s.pos.length_squared();
-        let cda = (CD_FLAT_T + CD_BASE_T) * std::f64::consts::PI * 0.625 * 0.625;
         let m = v.total_mass();
-        // v_t = √(2mg / (ρ·CdA·f(M))), Machfaktor selbstkonsistent
-        let mut vt = 100.0;
-        for _ in 0..50 {
-            let f = crate::aero::mach_factor(vt / air.speed_of_sound);
-            vt = (2.0 * m * g / (air.density * cda * f)).sqrt();
+        let drag = |speed: f64| crate::aero::vessel_forces(&v, Vec3::new(0.0, 0.0, speed), &air).0.length();
+        let (mut lo, mut hi) = (1.0, 2_000.0);
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if drag(mid) < m * g { lo = mid } else { hi = mid }
         }
+        let vt = lo;
         let speed = s.vel.length();
         assert!((speed - vt).abs() / vt < 0.005, "v {speed:.2} m/s, erwartet {vt:.2} m/s");
+        // und im Bereich der Messwerte für stumpfe Zylinder (Cd 0,8–1,1)
+        let a = std::f64::consts::PI * 0.625 * 0.625;
+        let cd = 2.0 * m * g / (air.density * vt * vt * a);
+        assert!(cd > 0.8 && cd < 1.1, "Cd = {cd}");
     }
-    const CD_FLAT_T: f64 = crate::aero::CD_FLAT;
-    const CD_BASE_T: f64 = crate::aero::CD_BASE;
 
     #[test]
     fn control_surfaces_steer_in_commanded_direction() {
@@ -584,6 +592,46 @@ mod tests {
         // Am Äquator: ~175 m/s Bahngeschwindigkeit schon auf der Rampe
         assert!((s.vel.length() - 174.9).abs() < 0.2);
         assert!(s.surface_velocity(&body).length() < 1e-9);
+    }
+
+    /// Antriebslos mit 10° Anstellwinkel in 5 km Höhe, ohne Steuerung.
+    /// Rückgabe: Anstellwinkel nach `seconds` Sekunden (Grad).
+    fn coast_with_aoa(fins: bool, seconds: f64) -> f64 {
+        let body = planet(Atmosphere::earthlike());
+        let mut v = crate::scenario::first_rocket(&PartLibrary::builtin());
+        if !fins {
+            v.parts.retain(|p| p.def.control_surface().is_none());
+            v.invalidate_geometry();
+        }
+        let up = Vec3::<Inertial>::new(1.0, 0.0, 0.0);
+        let east = Vec3::<Inertial>::new(0.0, 1.0, 0.0);
+        let aoa = 10f64.to_radians();
+        // Spitze 45° über dem Horizont, Flugrichtung 10° tiefer
+        let nose = (up + east).normalize_or_zero();
+        let vel_dir = (up * (45f64 - 10.0).to_radians().sin() + east * (45f64 - 10.0).to_radians().cos()).normalize_or_zero();
+        let mut s = RigidState {
+            time: 0.0,
+            pos: up * (600_000.0 + 5_000.0),
+            vel: vel_dir * 250.0,
+            attitude: Rotation::from_quat(glam::DQuat::from_rotation_arc(glam::DVec3::Z, nose.raw())),
+            omega: Vec3::ZERO,
+            contact_force: 0.0,
+        };
+        assert!((s.nose().dot(vel_dir).acos() - aoa).abs() < 1e-9);
+        let n = (seconds / DT_PHYSICS) as usize;
+        for _ in 0..n {
+            step(&mut v, &mut s, &Controls::default(), &body, DT_PHYSICS);
+        }
+        let surf = s.surface_velocity(&body).normalize_or_zero();
+        s.nose().dot(surf).clamp(-1.0, 1.0).acos().to_degrees()
+    }
+
+    #[test]
+    fn rocket_with_fins_weathervanes_without_fins_flips() {
+        let with = coast_with_aoa(true, 4.0);
+        let without = coast_with_aoa(false, 4.0);
+        assert!(with < 5.0, "mit Finnen: Anstellwinkel {with:.1}°");
+        assert!(without > 90.0, "ohne Finnen: Anstellwinkel {without:.1}° (muss umschlagen)");
     }
 
     #[test]

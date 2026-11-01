@@ -7,7 +7,8 @@
 use crate::part::{AttachKind, JointStrength, PartDef};
 use glam::DMat3;
 use sim_core::{PartLocal, Rotation, Vec3, VesselFrame};
-use std::sync::Arc;
+use crate::geometry::HullGeometry;
+use std::sync::{Arc, OnceLock};
 
 /// Verbindung eines Teils zu seinem Elternteil.
 #[derive(Debug, Clone, Copy)]
@@ -39,12 +40,12 @@ impl PartInstance {
         self.def.dry_mass + self.fuel
     }
     pub fn com(&self) -> Vec3<VesselFrame> {
-        self.origin + self.orientation.apply(self.def.shape.com_local())
+        self.origin + self.orientation.apply(self.def.hull.com_local())
     }
     /// Eigenträgheit um den eigenen Schwerpunkt, in Schiffsachsen.
     pub fn inertia(&self) -> DMat3 {
         let r = self.orientation.matrix();
-        r * self.def.shape.inertia_local(self.mass()) * r.transpose()
+        r * self.def.hull.inertia_local(self.mass()) * r.transpose()
     }
 }
 
@@ -52,9 +53,25 @@ impl PartInstance {
 pub struct Vessel {
     pub name: String,
     pub parts: Vec<PartInstance>,
+    /// Physikgeometrie (Polygone, Verdeckung, Spannweiten), einmal pro
+    /// Teileanordnung berechnet. Nach Änderungen an Lage oder Hülle der
+    /// Teile [`Vessel::invalidate_geometry`] aufrufen.
+    geometry: OnceLock<Arc<HullGeometry>>,
 }
 
 impl Vessel {
+    pub fn new(name: impl Into<String>, parts: Vec<PartInstance>) -> Self {
+        Self { name: name.into(), parts, geometry: OnceLock::new() }
+    }
+
+    pub fn geometry(&self) -> Arc<HullGeometry> {
+        self.geometry.get_or_init(|| Arc::new(HullGeometry::build(self))).clone()
+    }
+
+    pub fn invalidate_geometry(&mut self) {
+        self.geometry = OnceLock::new();
+    }
+
     pub fn len(&self) -> usize {
         self.parts.len()
     }
@@ -110,7 +127,7 @@ impl Vessel {
                 }
                 parts.push(p);
             }
-            Vessel { name, parts }
+            Vessel::new(name, parts)
         };
         let rest = build(&|j| !in_sub[j], self.name.clone());
         let detached = build(&|j| in_sub[j], format!("{} (Trümmer)", self.name));
@@ -229,8 +246,8 @@ impl VesselBuilder {
         assert_eq!(p.def.attach, AttachKind::Stack, "{} hat keinen unteren Knoten", p.def.name);
         assert_eq!(def.attach, AttachKind::Stack, "{} ist kein Stapelteil", def.name);
         let down = Vec3::new(0.0, 0.0, -1.0);
-        let node = p.origin + down * (p.def.shape.stack_length() / 2.0);
-        let origin = node + down * (def.shape.stack_length() / 2.0);
+        let node = p.origin + down * (p.def.hull.stack_length() / 2.0);
+        let origin = node + down * (def.hull.stack_length() / 2.0);
         self.push(def, origin, Rotation::IDENTITY, parent, node, down)
     }
 
@@ -241,9 +258,9 @@ impl VesselBuilder {
         let p = &self.parts[parent];
         assert_eq!(def.attach, AttachKind::Radial, "{} ist kein Radialteil", def.name);
         let outward = Vec3::new(angle.cos(), angle.sin(), 0.0);
-        let node = p.origin + outward * p.def.shape.surface_radius() + Vec3::new(0.0, 0.0, z_offset);
+        let node = p.origin + outward * p.def.hull.surface_radius() + Vec3::new(0.0, 0.0, z_offset);
         // Radialteile zeigen mit ihrer lokalen +X-Achse nach außen.
-        let half_span = match def.shape {
+        let half_span = match def.hull {
             crate::part::Shape::Plate { span, .. } => span / 2.0,
             s => s.surface_radius(),
         };
@@ -268,6 +285,6 @@ impl VesselBuilder {
     }
 
     pub fn build(self) -> Vessel {
-        Vessel { name: self.name, parts: self.parts }
+        Vessel::new(self.name, self.parts)
     }
 }

@@ -43,7 +43,7 @@ pub const LAUNCH_SITE: GeoPosition = GeoPosition { latitude: 0.0, longitude: 0.0
 /// Höhe des Schwerpunkts über der Unterkante des Schiffs.
 pub fn com_height(v: &Vessel) -> f64 {
     let mp = mass_properties(v);
-    let bottom = v.parts.iter().map(|p| p.origin.z() - p.def.shape.stack_length() / 2.0).fold(f64::INFINITY, f64::min);
+    let bottom = v.parts.iter().map(|p| p.origin.z() - p.def.hull.stack_length() / 2.0).fold(f64::INFINITY, f64::min);
     mp.com.z() - bottom
 }
 

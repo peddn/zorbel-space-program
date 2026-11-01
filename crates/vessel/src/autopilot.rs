@@ -19,7 +19,9 @@ pub fn attitude_control(v: &Vessel, s: &RigidState, target: Vec3<Inertial>, thru
     let axis = nose.cross(target);
     let angle = axis.length().atan2(nose.dot(target));
     let axis_body = s.attitude.inverse().apply(axis.normalize_or_zero());
-    let want = axis_body * (angle * 0.8).min(0.2);
+    // Lageschleife schneller als eine aerodynamisch instabile Rakete
+    // aufschaukeln kann (typisch 2–4/s), Drehrate begrenzt.
+    let want = axis_body * (angle * 3.0).min(0.35);
     rate_control(v, s, Vec3::new(want.x(), want.y(), 0.0), thrust)
 }
 
@@ -27,7 +29,7 @@ pub fn attitude_control(v: &Vessel, s: &RigidState, target: Vec3<Inertial>, thru
 /// Winkelgeschwindigkeit auf `want` (rad/s, Schiffssystem) bringt. Nutzt
 /// Reaktionsrad, Schubvektor und Steuerflächen gemeinsam.
 pub fn rate_control(v: &Vessel, s: &RigidState, want: Vec3<VesselFrame>, thrust: f64) -> Vec3<VesselFrame> {
-    const RESPONSE: f64 = 0.4; // s, Zeitkonstante der Drehratenregelung
+    const RESPONSE: f64 = 0.15; // s, Zeitkonstante der Drehratenregelung
     let err = want - s.omega;
 
     let mp = mass_properties(v);

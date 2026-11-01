@@ -387,7 +387,7 @@ fn spawn_vessel(
         .spawn((VesselView { id, version }, Transform::default(), Visibility::default()))
         .with_children(|root| {
             for (i, p) in v.parts.iter().enumerate() {
-                let (mesh, fix) = part_mesh(p.def.shape);
+                let (mesh, fix) = part_mesh(p.def.hull);
                 let mat = if p.def.engine().is_some() {
                     &mats.engine
                 } else if p.def.is_decoupler() {
@@ -400,7 +400,7 @@ fn spawn_vessel(
                     &mats.fin
                 };
                 root.spawn((PartView(i), Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat.clone()), Transform::from_rotation(fix)));
-                if let (Some(_), Shape::Cone { radius_bottom, .. }) = (p.def.engine(), p.def.shape) {
+                if let (Some(_), Shape::Cone { radius_bottom, .. }) = (p.def.engine(), p.def.hull) {
                     let flame = ConicalFrustum { radius_top: radius_bottom as f32 * 0.85, radius_bottom: 0.08, height: 1.0 };
                     root.spawn((
                         Flame(i),
@@ -452,12 +452,12 @@ pub fn sync_vessels(
                 let p = &o.vessel.parts[pv.0];
                 let d = p.origin - com;
                 ptr.translation = Vec3::new(d.x() as f32, d.y() as f32, d.z() as f32);
-                let fix = part_mesh_fix(p.def.shape);
+                let fix = part_mesh_fix(p.def.hull);
                 ptr.rotation = quat_f32(p.orientation.quat()) * fix;
             }
             if let Ok((fl, mut ftr, mut vis)) = flames.get_mut(child) {
                 let p = &o.vessel.parts[fl.0];
-                let len = p.def.shape.stack_length();
+                let len = p.def.hull.stack_length();
                 let flame_len = 1.5 + 9.0 * frac;
                 let d = p.origin - com;
                 ftr.translation = Vec3::new(d.x() as f32, d.y() as f32, (d.z() - len / 2.0) as f32 - flame_len / 2.0);

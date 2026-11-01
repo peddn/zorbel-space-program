@@ -13,6 +13,7 @@
 pub mod aero;
 pub mod autopilot;
 pub mod dynamics;
+pub mod geometry;
 pub mod ground;
 pub mod loads;
 pub mod mass;

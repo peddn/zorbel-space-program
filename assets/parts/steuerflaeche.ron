@@ -4,10 +4,10 @@
     name: "Steuerfläche",
     dry_mass: 50.0,
     attach: Radial,
-    shape: Plate(span: 0.8, chord: 1.0, thickness: 0.05),
+    hull: Plate(span: 0.8, chord: 1.0, thickness: 0.05),
     node_strength: (tension: 40000.0, compression: 40000.0, shear: 25000.0, bending: 15000.0, torsion: 8000.0),
     crash_tolerance: 6.0,              // m/s Aufprall am Boden
     modules: [
-        ControlSurface(area: 0.8, lift_slope: 5.0, max_deflection_deg: 15.0),
+        ControlSurface(max_deflection_deg: 15.0),   // Auftrieb folgt aus der Hülle
     ],
 )

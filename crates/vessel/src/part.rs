@@ -122,7 +122,9 @@ pub enum Module {
     Engine { thrust_vac: f64, isp_vac: f64, isp_sl: f64, gimbal_deg: f64 },
     FuelTank { capacity: f64 },
     Command { torque: f64 },
-    ControlSurface { area: f64, lift_slope: f64, max_deflection_deg: f64 },
+    /// Bewegliche Fläche: dreht sich um ihre Spannweitenachse (lokal X).
+    /// Ihre Luftkräfte folgen wie bei jedem Teil aus der Hülle.
+    ControlSurface { max_deflection_deg: f64 },
     Decoupler { eject_impulse: f64 },
 }
 
@@ -154,7 +156,6 @@ impl EngineSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlSurfaceSpec {
-    pub lift_slope: f64,
     pub max_deflection_rad: f64,
 }
 
@@ -165,17 +166,29 @@ pub struct PartDef {
     /// Leermasse in kg.
     pub dry_mass: f64,
     pub attach: AttachKind,
-    pub shape: Shape,
+    /// Einfaches Polygonmodell für die Physik (Luft, Boden, Verdeckung).
+    /// Die Darstellung benutzt eigene Modelle.
+    pub hull: Shape,
     pub node_strength: JointStrength,
     /// Größte Aufprallgeschwindigkeit, die das Teil am Boden übersteht (m/s).
     #[serde(default = "default_crash_tolerance")]
     pub crash_tolerance: f64,
+    /// Abstimmfaktoren für die Spielbalance. Die Luftkräfte folgen für alle
+    /// Teile aus derselben Rechnung; diese Faktoren skalieren sie nur.
+    #[serde(default = "one")]
+    pub drag_factor: f64,
+    #[serde(default = "one")]
+    pub lift_factor: f64,
     #[serde(default)]
     pub modules: Vec<Module>,
 }
 
 fn default_crash_tolerance() -> f64 {
     8.0
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 impl PartDef {
@@ -192,10 +205,9 @@ impl PartDef {
     }
     pub fn control_surface(&self) -> Option<ControlSurfaceSpec> {
         self.modules.iter().find_map(|m| match *m {
-            Module::ControlSurface { lift_slope, max_deflection_deg, .. } => Some(ControlSurfaceSpec {
-                lift_slope,
-                max_deflection_rad: max_deflection_deg.to_radians(),
-            }),
+            Module::ControlSurface { max_deflection_deg } => {
+                Some(ControlSurfaceSpec { max_deflection_rad: max_deflection_deg.to_radians() })
+            }
             _ => None,
         })
     }
